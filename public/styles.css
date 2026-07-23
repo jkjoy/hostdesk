@@ -180,20 +180,20 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 .update-status.update-available svg { color: #a36a0a; }
 .update-actions { flex: none; display: flex; gap: 7px; }
 .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-.service-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.service-card { min-width: 0; min-height: 148px; padding: 16px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .service-card-head { display: flex; align-items: center; justify-content: space-between; }
-.service-identity { display: flex; align-items: center; gap: 10px; }
-.service-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 6px; background: var(--surface-2); color: #596660; }
+.service-identity { width: 100%; min-width: 0; display: flex; align-items: center; gap: 10px; }
+.service-icon { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 6px; background: var(--surface-2); color: #596660; }
 .service-icon svg { width: 18px; }
-.service-label { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.service-label { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .service-name-row { display: flex; align-items: center; gap: 8px; }
 .service-identity strong { font-size: 15px; }
-.service-identity span { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.service-version { min-height: 30px; max-height: 30px; display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; line-height: 15px; white-space: normal; color: var(--muted); font-size: 11px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .state-badge { padding: 3px 7px; border-radius: 5px; background: var(--surface-2); color: var(--muted); font-size: 11px; font-weight: 700; }
 .state-badge.running { background: var(--accent-soft); color: var(--accent-dark); }
 .service-name-row .service-status-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: #cf4141; box-shadow: 0 0 0 3px rgba(207, 65, 65, .14); }
 .service-status-dot.running { background: #25a56f; box-shadow: 0 0 0 3px rgba(37, 165, 111, .15); }
-.service-actions { margin-top: 18px; display: flex; gap: 7px; }
+.service-actions { margin-top: auto; padding-top: 18px; display: flex; gap: 7px; }
 .service-actions button { flex: 1; }
 .admin-table-wrap { position: relative; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .admin-table { width: 100%; border-collapse: collapse; table-layout: auto; }

@@ -770,7 +770,9 @@ async function loadAdminOverview() {
     status.setAttribute("aria-label", statusLabel);
     nameRow.append(strong, status);
     const version = document.createElement("span");
+    version.className = "service-version";
     version.textContent = service.version || (service.installed ? "已安装" : "尚未安装");
+    version.title = version.textContent;
     label.append(nameRow, version);
     identity.append(iconWrap, label);
     head.append(identity);
