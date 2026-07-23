@@ -164,6 +164,26 @@ detect_architecture() {
   esac
 }
 
+download_release_asset() {
+  local url="$1"
+  local output="$2"
+  local attempt
+  local max_attempts=24
+
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if curl --fail --location --silent --show-error \
+      --output "$output" "$url"; then
+      return
+    fi
+    if ((attempt < max_attempts)); then
+      log "Release 产物尚未就绪，5 秒后重试 (${attempt}/${max_attempts})"
+      sleep 5
+    fi
+  done
+
+  return 1
+}
+
 write_config() {
   local host="$1"
   local port="$2"
@@ -228,10 +248,10 @@ fi
 
 TEMP_DIR="$(mktemp -d /tmp/hostdesk-install.XXXXXX)"
 log "下载 ${asset} (${RELEASE_VERSION})"
-curl --fail --location --silent --show-error --retry 3 \
-  --output "$TEMP_DIR/$asset" "$download_base/$asset"
-curl --fail --location --silent --show-error --retry 3 \
-  --output "$TEMP_DIR/checksums.txt" "$download_base/checksums.txt"
+download_release_asset "$download_base/$asset" "$TEMP_DIR/$asset" || \
+  die "无法下载 ${asset}，请确认 Release 已完成构建"
+download_release_asset "$download_base/checksums.txt" "$TEMP_DIR/checksums.txt" || \
+  die "无法下载 checksums.txt，请确认 Release 已完成构建"
 
 awk -v asset="$asset" '$2 == asset { print; found = 1 } END { if (!found) exit 1 }' \
   "$TEMP_DIR/checksums.txt" >"$TEMP_DIR/checksum.selected" || \
