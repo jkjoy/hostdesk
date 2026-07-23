@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, type Component } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, type Component } from "vue";
 import {
   Activity,
   ArrowDownToLine,
@@ -41,6 +41,18 @@ import {
 } from "@lucide/vue";
 import { api, ApiError, setCSRF } from "./api";
 import type { Overview, ServiceStatus, Session, UpdateStatus } from "./types";
+import { uiKey } from "./ui";
+import FilesView from "./views/FilesView.vue";
+import SitesView from "./views/SitesView.vue";
+import CertificatesView from "./views/CertificatesView.vue";
+import NginxView from "./views/NginxView.vue";
+import PHPView from "./views/PHPView.vue";
+import DatabasesView from "./views/DatabasesView.vue";
+import FTPView from "./views/FTPView.vue";
+import ContainersView from "./views/ContainersView.vue";
+import TerminalView from "./views/TerminalView.vue";
+import AccountView from "./views/AccountView.vue";
+import ServerSettingsView from "./views/ServerSettingsView.vue";
 
 type Screen = "boot" | "login" | "setup" | "app";
 type ToastKind = "success" | "error";
@@ -58,6 +70,8 @@ const login = reactive({ username: "admin", password: "" });
 const setup = reactive({ username: "admin", password: "", confirm: "" });
 const toasts = ref<Array<{ id: number; kind: ToastKind; message: string }>>([]);
 const confirmation = reactive({ open: false, title: "", message: "", confirmText: "确认", danger: false, resolve: null as null | ((value: boolean) => void) });
+const currentView = ref("overview");
+const fileInitialPath = ref("");
 let toastID = 0;
 let refreshTimer: number | undefined;
 
@@ -65,28 +79,28 @@ const navGroups = [
   {
     label: "工作台",
     items: [
-      { label: "概览", icon: Gauge, current: true },
-      { label: "文件", icon: Folder, href: "/legacy?view=files" },
+      { id: "overview", label: "概览", icon: Gauge },
+      { id: "files", label: "文件", icon: Folder },
     ],
   },
   {
     label: "站点服务",
     items: [
-      { label: "网站", icon: Globe2, href: "/legacy?tab=sites" },
-      { label: "证书", icon: ShieldCheck, href: "/legacy?tab=certificates" },
-      { label: "Nginx", icon: Network, href: "/legacy?tab=nginx" },
-      { label: "PHP", icon: FileCode2, href: "/legacy?tab=php" },
-      { label: "数据库", icon: Database, href: "/legacy?tab=databases" },
-      { label: "FTP", icon: FolderSync, href: "/legacy?tab=ftp" },
+      { id: "sites", label: "网站", icon: Globe2 },
+      { id: "certificates", label: "证书", icon: ShieldCheck },
+      { id: "nginx", label: "Nginx", icon: Network },
+      { id: "php", label: "PHP", icon: FileCode2 },
+      { id: "databases", label: "数据库", icon: Database },
+      { id: "ftp", label: "FTP", icon: FolderSync },
     ],
   },
   {
     label: "系统",
     items: [
-      { label: "容器", icon: Container, href: "/legacy?tab=containers" },
-      { label: "终端", icon: SquareTerminal, href: "/legacy?tab=terminal" },
-      { label: "账号安全", icon: KeyRound, href: "/legacy?tab=account" },
-      { label: "服务器设置", icon: Settings, href: "/legacy?tab=server-settings" },
+      { id: "containers", label: "容器", icon: Container },
+      { id: "terminal", label: "终端", icon: SquareTerminal },
+      { id: "account", label: "账号安全", icon: KeyRound },
+      { id: "server-settings", label: "服务器设置", icon: Settings },
     ],
   },
 ];
@@ -94,6 +108,8 @@ const navGroups = [
 const serviceNames: Record<string, string> = { nginx: "Nginx", php: "PHP-FPM", mysql: "MariaDB", ftp: "vsftpd" };
 const serviceIcons: Record<string, Component> = { nginx: Network, php: FileCode2, mysql: Database, ftp: FolderSync };
 const system = computed(() => overview.value?.system);
+const viewLabels = computed(() => Object.fromEntries(navGroups.flatMap(group => group.items.map(item => [item.id, item.label]))));
+const viewComponents: Record<string, Component> = { files: FilesView, sites: SitesView, certificates: CertificatesView, nginx: NginxView, php: PHPView, databases: DatabasesView, ftp: FTPView, containers: ContainersView, terminal: TerminalView, account: AccountView, "server-settings": ServerSettingsView };
 
 function notify(message: string, kind: ToastKind = "success") {
   const id = ++toastID;
@@ -101,13 +117,31 @@ function notify(message: string, kind: ToastKind = "success") {
   window.setTimeout(() => { toasts.value = toasts.value.filter((item) => item.id !== id); }, 3600);
 }
 
-function ask(title: string, message: string, confirmText: string, danger = false) {
+function ask(title: string, message: string, confirmText = "确认", danger = false) {
   confirmation.open = true;
   confirmation.title = title;
   confirmation.message = message;
   confirmation.confirmText = confirmText;
   confirmation.danger = danger;
   return new Promise<boolean>((resolve) => { confirmation.resolve = resolve; });
+}
+provide(uiKey, { notify, confirm: ask });
+
+function selectView(id: string) {
+  currentView.value = id;
+  mobileNavOpen.value = false;
+  if (id === "overview") void loadOverview();
+}
+
+function openSiteFiles(absolutePath: string) {
+  const root = session.value?.fileRoot === "/" ? "/" : session.value?.fileRoot.replace(/\/+$/, "") || "/";
+  const normalized = absolutePath.replace(/\/+/g, "/").replace(/\/$/, "") || "/";
+  fileInitialPath.value = root === "/" ? normalized.replace(/^\//, "") : normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : "";
+  currentView.value = "files";
+}
+
+function accountChanged(username: string) {
+  if (session.value) session.value.user = username;
 }
 
 function closeConfirmation(value: boolean) {
@@ -157,6 +191,7 @@ function enterApp(value: Session) {
   login.username = value.user;
   login.password = "";
   screen.value = "app";
+  currentView.value = "overview";
   void loadOverview();
 }
 
@@ -334,12 +369,9 @@ onBeforeUnmount(() => {
       <nav class="main-nav" aria-label="主导航">
         <section v-for="group in navGroups" :key="group.label" class="nav-group">
           <h2>{{ group.label }}</h2>
-          <template v-for="item in group.items" :key="item.label">
-            <button v-if="item.current" class="nav-item active" type="button" @click="mobileNavOpen = false">
-              <component :is="item.icon" :size="17" /><span>{{ item.label }}</span><ChevronRight :size="15" />
-            </button>
-            <a v-else class="nav-item" :href="item.href"><component :is="item.icon" :size="17" /><span>{{ item.label }}</span></a>
-          </template>
+          <button v-for="item in group.items" :key="item.id" class="nav-item" :class="{ active: currentView === item.id }" type="button" @click="selectView(item.id)">
+            <component :is="item.icon" :size="17" /><span>{{ item.label }}</span><ChevronRight v-if="currentView === item.id" :size="15" />
+          </button>
         </section>
       </nav>
       <div class="sidebar-account">
@@ -352,14 +384,16 @@ onBeforeUnmount(() => {
     <main class="app-main">
       <header class="topbar">
         <button class="icon-button mobile-menu" type="button" title="打开导航" @click="mobileNavOpen = true"><Menu :size="20" /></button>
-        <div class="breadcrumbs"><span>服务器</span><ChevronRight :size="14" /><strong>概览</strong></div>
+        <div class="breadcrumbs"><span>服务器</span><ChevronRight :size="14" /><strong>{{ viewLabels[currentView] || '概览' }}</strong></div>
         <div class="topbar-actions">
           <span class="platform-label">{{ overview?.platform || 'Alpine Linux / OpenRC' }}</span>
-          <button class="icon-button" type="button" title="刷新概览" :disabled="loadingOverview" @click="loadOverview(true)"><RefreshCw :class="{ spin: loadingOverview }" :size="18" /></button>
+          <button v-if="currentView === 'overview'" class="icon-button" type="button" title="刷新概览" :disabled="loadingOverview" @click="loadOverview(true)"><RefreshCw :class="{ spin: loadingOverview }" :size="18" /></button>
         </div>
       </header>
 
       <div class="page-content">
+        <component :is="viewComponents[currentView]" v-if="currentView !== 'overview'" :key="currentView === 'files' ? `${currentView}:${fileInitialPath}` : currentView" :initial-path="fileInitialPath" @open-files="openSiteFiles" @account-changed="accountChanged" />
+        <template v-else>
         <header class="page-heading">
           <div><span class="page-kicker">SERVER OVERVIEW</span><h1>服务器概览</h1></div>
           <span class="last-updated">{{ update?.checkedAt ? `更新于 ${new Date(update.checkedAt).toLocaleTimeString('zh-CN', { hour12: false })}` : '正在读取状态' }}</span>
@@ -448,6 +482,7 @@ onBeforeUnmount(() => {
         <div v-else class="overview-skeleton" aria-label="正在加载服务器概览">
           <div class="skeleton server"></div><div class="skeleton-grid"><div v-for="index in 4" :key="index" class="skeleton metric"></div></div><div class="skeleton services"></div>
         </div>
+        </template>
       </div>
     </main>
   </div>

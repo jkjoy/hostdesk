@@ -1,0 +1,8 @@
+<script setup lang="ts">
+import { onMounted, reactive, ref } from "vue"; import { Save } from "@lucide/vue"; import { api } from "../api"; import { errorMessage, useUI } from "../ui"; import PageHeader from "../components/PageHeader.vue";
+const { notify } = useUI(); const loading = ref(false); const form = reactive({ clientMaxBodySize: "64m", keepaliveTimeout: 65, gzip: true, serverTokens: false });
+async function load() { loading.value = true; try { Object.assign(form, await api("/api/admin/nginx/settings")); } catch (e) { notify(errorMessage(e), "error"); } finally { loading.value = false; } }
+async function save() { loading.value = true; try { await api("/api/admin/nginx/settings", { method: "PUT", body: form }); notify("Nginx 设置已保存并通过配置检查"); } catch (e) { notify(errorMessage(e), "error"); } finally { loading.value = false; } }
+onMounted(load);
+</script>
+<template><PageHeader title="Nginx" subtitle="全局设置，保存前自动执行配置检查" kicker="WEB SERVER" /><form class="settings-panel narrow-panel" @submit.prevent="save"><div class="section-title"><div><h2>基础设置</h2><span>修改后将平滑重载服务</span></div><button class="button primary" :disabled="loading"><Save :size="16" />保存</button></div><div class="form-grid"><label class="field">请求体上限<input v-model="form.clientMaxBodySize" required></label><label class="field">Keepalive 秒数<input v-model.number="form.keepaliveTimeout" type="number" min="5" max="600" required></label><label class="check-field"><input v-model="form.gzip" type="checkbox">启用 Gzip</label><label class="check-field"><input v-model="form.serverTokens" type="checkbox">显示版本信息</label></div></form></template>

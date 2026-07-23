@@ -167,17 +167,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	legacyIndex, err := embeddedFiles.ReadFile("public/index.html")
-	if err != nil {
-		log.Fatal(err)
-	}
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(appIndex)
-	})
-	mux.HandleFunc("GET /legacy", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(legacyIndex)
 	})
 
 	static, err := fs.Sub(embeddedFiles, "public")
