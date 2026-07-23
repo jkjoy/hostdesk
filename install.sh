@@ -184,6 +184,24 @@ download_release_asset() {
   return 1
 }
 
+detect_public_ipv4() {
+  local endpoint
+  local address
+
+  for endpoint in "https://api.ipify.org" "https://ipv4.icanhazip.com"; do
+    if address="$(curl --ipv4 --fail --silent --max-time 5 "$endpoint")"; then
+      address="${address//$'\r'/}"
+      address="${address//$'\n'/}"
+      if [[ "$address" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        printf '%s' "$address"
+        return
+      fi
+    fi
+  done
+
+  return 1
+}
+
 write_config() {
   local host="$1"
   local port="$2"
@@ -267,8 +285,7 @@ if [[ -f "$CONFIG_PATH" ]] && confirm "检测到现有配置，是否保留" yes
 fi
 
 if [[ "$keep_config" != true ]]; then
-  host="$(prompt "监听地址" "127.0.0.1")"
-  [[ -n "$host" && "$host" != *[[:space:]]* ]] || die "监听地址不能为空或包含空白字符"
+  host="0.0.0.0"
   port="$(prompt_port)"
   file_root="$(prompt_absolute_directory "文件管理根目录" "/" true)"
   data_dir="$(prompt_absolute_directory "数据目录" "/var/lib/hostdesk" false)"
@@ -315,7 +332,11 @@ log "运行日志: /var/log/hostdesk.log"
 if [[ "$keep_config" == true ]]; then
   log "已保留现有配置: $CONFIG_PATH"
 else
-  log "访问地址: http://${host}:${port}"
-  [[ "$host" == "127.0.0.1" || "$host" == "localhost" ]] || \
-    log "请使用 HTTPS 反向代理保护公网访问"
+  if public_ip="$(detect_public_ipv4)"; then
+    log "访问地址: http://${public_ip}:${port}"
+  else
+    log "访问地址: http://<服务器公网IP>:${port}"
+    log "未能自动获取公网 IP，请使用服务器的实际公网 IP 访问"
+  fi
+  log "请使用 HTTPS 反向代理保护公网访问"
 fi

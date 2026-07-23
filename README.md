@@ -51,7 +51,7 @@ chmod +x hostdesk
 apk add --no-cache bash curl && curl -fsSL https://raw.githubusercontent.com/jkjoy/hostdesk/main/install.sh | bash
 ```
 
-安装器会自动识别 `386`、`amd64`、`arm64` 或 `armv7` 架构，下载最新 Release 二进制并校验 SHA256，然后交互设置监听地址、端口、文件根目录和数据目录。安装完成后，HostDesk 会注册为 OpenRC 服务并加入默认运行级别。
+安装器会自动识别 `386`、`amd64`、`arm64` 或 `armv7` 架构，下载最新 Release 二进制并校验 SHA256。服务固定监听 `0.0.0.0`，安装器会交互设置端口、文件根目录和数据目录，并在完成后显示服务器的公网访问地址。HostDesk 会注册为 OpenRC 服务并加入默认运行级别。
 
 重复运行安装器可以升级 HostDesk，并默认保留 `/etc/conf.d/hostdesk` 中的现有配置。安装指定版本或使用默认配置进行无人值守安装：
 
