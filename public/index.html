@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>HostDesk</title>
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/styles.css?v=20260721-server-settings1">
+</head>
+<body>
+  <section id="setup-view" class="login-shell" hidden>
+    <div class="login-brand">
+      <span class="brand-mark"><i data-lucide="server"></i></span>
+      <div><strong>HostDesk</strong><span>主机工作台</span></div>
+    </div>
+    <form id="setup-form" class="login-panel">
+      <div class="login-heading">
+        <span class="eyebrow">首次初始化</span>
+        <h1>创建管理员账号</h1>
+        <p>该账号将保存在本机 SQLite 数据库中</p>
+      </div>
+      <label>管理员账号<input id="setup-user" name="username" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]{3,32}" required></label>
+      <label>管理员密码<input id="setup-password" name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+      <label>确认密码<input id="setup-confirm" name="password-confirm" type="password" autocomplete="new-password" minlength="12" required></label>
+      <p id="setup-error" class="form-error" role="alert"></p>
+      <button class="primary wide" type="submit"><i data-lucide="user-round-check"></i><span>创建并进入</span></button>
+    </form>
+  </section>
+
+  <section id="login-view" class="login-shell" hidden>
+    <div class="login-brand">
+      <span class="brand-mark"><i data-lucide="server"></i></span>
+      <div><strong>HostDesk</strong><span>主机工作台</span></div>
+    </div>
+    <form id="login-form" class="login-panel">
+      <div class="login-heading">
+        <span class="eyebrow">安全登录</span>
+        <h1>管理这台主机</h1>
+        <p>使用管理员凭据继续</p>
+      </div>
+      <label>账号<input id="login-user" name="username" autocomplete="username" value="admin" required></label>
+      <label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="form-error" role="alert"></p>
+      <button class="primary wide" type="submit"><i data-lucide="log-in"></i><span>登录</span></button>
+    </form>
+  </section>
+
+  <div id="app" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="app-brand"><span class="brand-mark small"><i data-lucide="server"></i></span><strong>HostDesk</strong></div>
+      <nav class="view-switch" aria-label="工作区">
+        <button class="active" data-view="files"><i data-lucide="folder"></i><span>文件</span></button>
+        <button data-view="admin"><i data-lucide="panels-top-left"></i><span>服务器</span></button>
+      </nav>
+      <div class="account">
+        <span class="online-dot"></span><span id="account-name">admin</span>
+        <button id="logout-btn" class="icon-btn" title="退出登录"><i data-lucide="log-out"></i></button>
+      </div>
+    </header>
+
+    <main id="files-view" class="workspace">
+      <aside class="sidebar">
+        <div class="sidebar-title">位置</div>
+        <button class="side-link active" data-jump=""><i data-lucide="hard-drive"></i><span>管理根目录</span></button>
+        <div class="sidebar-title recent-title">最近访问</div>
+        <div id="recent-list" class="recent-list"></div>
+        <div class="scope-info"><i data-lucide="shield-check"></i><div><span>访问范围</span><code id="root-path">/root</code></div></div>
+      </aside>
+
+      <section class="file-pane">
+        <div class="pathbar">
+          <button id="sidebar-toggle" class="icon-btn mobile-only" title="位置"><i data-lucide="panel-left"></i></button>
+          <button id="up-btn" class="icon-btn" title="上一级"><i data-lucide="arrow-up"></i></button>
+          <div id="breadcrumbs" class="breadcrumbs"></div>
+          <button id="refresh-btn" class="icon-btn" title="刷新"><i data-lucide="refresh-cw"></i></button>
+        </div>
+
+        <div class="toolbar">
+          <div class="toolbar-group">
+            <button id="new-file-btn"><i data-lucide="file-plus"></i><span>新建文件</span></button>
+            <button id="new-folder-btn"><i data-lucide="folder-plus"></i><span>新建目录</span></button>
+            <button id="upload-btn"><i data-lucide="upload"></i><span>上传</span></button>
+            <input id="upload-input" type="file" multiple hidden>
+          </div>
+          <div id="selection-actions" class="toolbar-group selection-actions" hidden>
+            <span id="selection-count"></span>
+            <button id="copy-btn" title="复制"><i data-lucide="copy"></i></button>
+            <button id="move-btn" title="移动"><i data-lucide="move"></i></button>
+            <button id="archive-btn" title="打包"><i data-lucide="archive"></i></button>
+            <button id="delete-btn" class="danger-ghost" title="删除"><i data-lucide="trash-2"></i></button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="file-table">
+            <thead><tr><th class="check-cell"><input id="select-all" type="checkbox" aria-label="全选"></th><th>名称</th><th>大小</th><th>修改时间</th><th>权限</th><th class="actions-cell"></th></tr></thead>
+            <tbody id="file-list"></tbody>
+          </table>
+          <div id="empty-state" class="empty-state" hidden><i data-lucide="folder-open"></i><strong>目录为空</strong><span>可新建文件或上传内容</span></div>
+          <div id="loading-state" class="loading-state"><span class="spinner"></span></div>
+        </div>
+        <footer class="statusbar"><span id="item-summary">0 项</span><span id="path-summary"></span></footer>
+      </section>
+    </main>
+
+    <main id="admin-view" class="admin-workspace" hidden>
+      <aside class="admin-sidebar">
+        <div class="sidebar-title">服务器管理</div>
+        <button class="admin-link active" data-admin-tab="overview"><i data-lucide="gauge"></i><span>概览</span></button>
+        <button class="admin-link" data-admin-tab="server-settings"><i data-lucide="settings"></i><span>服务器设置</span></button>
+        <button class="admin-link" data-admin-tab="sites"><i data-lucide="globe-2"></i><span>网站</span></button>
+        <button class="admin-link" data-admin-tab="certificates"><i data-lucide="shield-check"></i><span>证书</span></button>
+        <button class="admin-link" data-admin-tab="nginx"><i data-lucide="network"></i><span>Nginx</span></button>
+        <button class="admin-link" data-admin-tab="php"><i data-lucide="file-code-2"></i><span>PHP</span></button>
+        <button class="admin-link" data-admin-tab="databases"><i data-lucide="database"></i><span>数据库</span></button>
+        <button class="admin-link" data-admin-tab="containers"><i data-lucide="container"></i><span>容器</span></button>
+        <button class="admin-link" data-admin-tab="terminal"><i data-lucide="square-terminal"></i><span>终端</span></button>
+        <button class="admin-link" data-admin-tab="account"><i data-lucide="key-round"></i><span>账号安全</span></button>
+      </aside>
+
+      <section class="admin-pane">
+        <div class="admin-topbar">
+          <div><h1 id="admin-title">服务器概览</h1><span id="admin-subtitle">Alpine Linux / OpenRC</span></div>
+          <button id="admin-refresh" class="icon-btn" title="刷新"><i data-lucide="refresh-cw"></i></button>
+        </div>
+
+        <div id="admin-overview" class="admin-content">
+          <div class="section-heading"><div><h2>服务器</h2><span>主机资源与网络概况</span></div></div>
+          <div id="server-summary" class="server-summary"></div>
+          <div id="resource-grid" class="resource-grid"></div>
+          <div class="section-heading"><div><h2>运行环境</h2><span>安装、启动和维护 Web 服务组件</span></div></div>
+          <div id="service-grid" class="service-grid"></div>
+        </div>
+
+        <div id="admin-server-settings" class="admin-content" hidden>
+          <form id="server-settings-form" class="settings-section server-settings-section">
+            <div class="section-heading"><div><h2>基础设置</h2><span>主机标识与系统时区</span></div><button class="primary" type="submit"><i data-lucide="save"></i><span>保存</span></button></div>
+            <div class="server-system-info"><div><span>操作系统</span><strong id="server-os">-</strong></div><div><span>内核 / 架构</span><strong id="server-kernel">-</strong></div><div><span>当前时间</span><strong id="server-current-time">-</strong></div><div><span>时间同步</span><strong id="server-ntp">-</strong></div></div>
+            <div class="form-grid server-settings-grid">
+              <label>服务器主机名<input id="server-hostname" maxlength="253" required pattern="[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]|[A-Za-z0-9]"></label>
+              <label>系统时区<select id="server-timezone" required></select></label>
+            </div>
+          </form>
+          <section class="swap-section">
+            <div class="section-heading"><div><h2>交换空间</h2><span id="swap-summary">正在读取</span></div><button id="new-swap-btn" class="primary"><i data-lucide="plus"></i><span>增加交换空间</span></button></div>
+            <div class="admin-table-wrap"><table class="admin-table swap-table"><thead><tr><th>设备 / 文件</th><th>类型</th><th>容量</th><th>已使用</th><th>优先级</th><th>管理方式</th><th></th></tr></thead><tbody id="swap-list"></tbody></table><div id="swaps-empty" class="inline-empty" hidden>当前没有交换空间</div></div>
+          </section>
+        </div>
+
+        <div id="admin-terminal" class="admin-content admin-terminal" hidden>
+          <form id="ssh-form" class="connection-bar">
+            <label><span>主机</span><input id="ssh-host" value="127.0.0.1" required></label>
+            <label class="port-field"><span>端口</span><input id="ssh-port" type="number" value="22" min="1" max="65535" required></label>
+            <label><span>用户</span><input id="ssh-user" autocomplete="username" required></label>
+            <label><span>密码</span><input id="ssh-password" type="password" autocomplete="current-password"></label>
+            <button id="ssh-key-btn" type="button" title="选择 SSH 私钥"><i data-lucide="key-round"></i><span>私钥</span></button>
+            <input id="ssh-key-file" type="file" hidden>
+            <button id="ssh-connect" class="primary" type="submit"><i data-lucide="plug"></i><span>连接</span></button>
+            <button id="ssh-disconnect" type="button" hidden><i data-lucide="unplug"></i><span>断开</span></button>
+          </form>
+          <div class="terminal-header"><div><span id="terminal-dot" class="terminal-dot"></span><span id="terminal-status">未连接</span></div><button id="terminal-clear" class="icon-btn" title="清屏"><i data-lucide="eraser"></i></button></div>
+          <div id="terminal"></div>
+        </div>
+
+        <div id="admin-sites" class="admin-content" hidden>
+          <div class="section-heading"><div><h2>网站</h2><span>Nginx 虚拟主机与网站目录</span></div><button id="new-site-btn" class="primary"><i data-lucide="plus"></i><span>添加网站</span></button></div>
+          <div class="admin-table-wrap"><table class="admin-table sites-table"><thead><tr><th>域名</th><th>类型</th><th>目录 / 上游</th><th>HTTPS</th><th>状态</th><th class="site-actions-col">操作</th></tr></thead><tbody id="site-list"></tbody></table><div id="sites-empty" class="inline-empty" hidden>还没有网站</div></div>
+        </div>
+
+        <div id="admin-certificates" class="admin-content" hidden>
+          <div class="section-heading"><div><h2>证书</h2><span>Let's Encrypt TLS 证书</span></div><button id="new-certificate-btn" class="primary"><i data-lucide="badge-plus"></i><span>申请证书</span></button></div>
+          <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>网站</th><th>域名</th><th>验证</th><th>到期时间</th><th>自动续期</th><th>状态</th><th></th></tr></thead><tbody id="certificate-list"></tbody></table><div id="certificates-empty" class="inline-empty" hidden>暂无托管证书</div></div>
+        </div>
+
+        <div id="admin-nginx" class="admin-content" hidden>
+          <form id="nginx-settings-form" class="settings-section">
+            <div class="section-heading"><div><h2>Nginx 设置</h2><span>保存前自动执行配置检查</span></div><button class="primary" type="submit"><i data-lucide="save"></i><span>保存</span></button></div>
+            <div class="form-grid">
+              <label>请求体上限<input id="nginx-body-size" value="64m" required></label>
+              <label>Keepalive 秒数<input id="nginx-keepalive" type="number" min="5" max="600" value="65" required></label>
+              <label class="check-label"><input id="nginx-gzip" type="checkbox"><span>启用 Gzip</span></label>
+              <label class="check-label"><input id="nginx-tokens" type="checkbox"><span>显示版本信息</span></label>
+            </div>
+          </form>
+        </div>
+
+        <div id="admin-php" class="admin-content" hidden>
+          <form id="php-settings-form" class="settings-section">
+            <div class="section-heading"><div><h2>PHP 设置</h2><span id="php-version">未安装</span></div><button class="primary" type="submit"><i data-lucide="save"></i><span>保存并重启 FPM</span></button></div>
+            <div class="form-grid php-settings-grid">
+              <label>上传上限<input id="php-upload" value="64m" required></label>
+              <label>POST 上限<input id="php-post" value="64m" required></label>
+              <label>内存限制<input id="php-memory" value="256m" required></label>
+              <label>执行时间（秒）<input id="php-time" type="number" min="0" max="3600" value="30" required></label>
+              <label class="check-label"><input id="php-errors" type="checkbox"><span>显示 PHP 错误</span></label>
+            </div>
+          </form>
+          <section class="extensions-section"><div class="section-heading"><div><h2>PHP 扩展</h2><span>扩展安装后自动重启 PHP-FPM</span></div></div><div id="extension-grid" class="extension-grid"></div></section>
+        </div>
+
+        <div id="admin-databases" class="admin-content" hidden>
+          <div class="section-heading"><div><h2>数据库</h2><span>MariaDB/MySQL 数据库与授权用户</span></div><div class="heading-actions"><button id="new-db-user-btn"><i data-lucide="user-plus"></i><span>添加用户</span></button><button id="new-db-btn" class="primary"><i data-lucide="database-backup"></i><span>创建数据库</span></button></div></div>
+          <div class="database-columns">
+            <section><h3>数据库</h3><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>名称</th><th>表</th><th>大小</th><th></th></tr></thead><tbody id="database-list"></tbody></table><div id="databases-empty" class="inline-empty" hidden>暂无业务数据库</div></div></section>
+            <section><h3>数据库用户</h3><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>用户</th><th>允许主机</th><th>认证</th><th></th></tr></thead><tbody id="db-user-list"></tbody></table><div id="db-users-empty" class="inline-empty" hidden>暂无业务用户</div></div></section>
+          </div>
+        </div>
+
+        <div id="admin-containers" class="admin-content" hidden>
+          <div class="section-heading"><div><h2>容器</h2><span>Docker 容器状态、资源与运行配置</span></div></div>
+          <div class="admin-table-wrap"><table class="admin-table containers-table"><thead><tr><th>容器</th><th>镜像</th><th>状态</th><th>CPU / 内存</th><th>网络流量</th><th>端口</th><th class="container-actions-col">操作</th></tr></thead><tbody id="container-list"></tbody></table><div id="containers-empty" class="inline-empty" hidden>暂无容器</div></div>
+        </div>
+
+        <div id="admin-account" class="admin-content" hidden>
+          <form id="account-form" class="settings-section account-settings">
+            <div class="section-heading"><div><h2>管理员凭据</h2><span>用户名与登录密码</span></div><button class="primary" type="submit"><i data-lucide="save"></i><span>保存</span></button></div>
+            <div class="form-grid one-column">
+              <label>用户名<input id="account-user" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]{3,32}" required></label>
+              <label>当前密码<input id="account-current-password" type="password" autocomplete="current-password" maxlength="1024" required></label>
+              <label>新密码<input id="account-new-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024"></label>
+              <label>确认新密码<input id="account-confirm-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024"></label>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="action-dialog">
+    <form id="action-form" method="dialog">
+      <div class="dialog-head"><h2 id="dialog-title">操作</h2><button id="dialog-close" class="icon-btn" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <p id="dialog-message" class="dialog-message"></p>
+      <label id="dialog-field"><span id="dialog-label"></span><input id="dialog-input"></label>
+      <div class="dialog-actions"><button id="dialog-cancel" type="button">取消</button><button id="dialog-submit" class="primary" type="submit">确认</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="editor-dialog" class="editor-dialog">
+    <form method="dialog">
+      <div class="editor-head"><div><i data-lucide="file-code"></i><span id="editor-name"></span></div><div><button id="editor-close" type="button">关闭</button><button id="editor-save" class="primary" type="button"><i data-lucide="save"></i><span>保存</span></button></div></div>
+      <textarea id="editor-content" spellcheck="false"></textarea>
+      <div class="editor-status"><span id="editor-path"></span><span id="editor-stats"></span></div>
+    </form>
+  </dialog>
+
+  <dialog id="site-dialog" class="form-dialog">
+    <form id="site-form">
+      <div class="dialog-head"><h2 id="site-dialog-title">添加网站</h2><button class="icon-btn dialog-x" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div class="dialog-body form-grid one-column">
+        <label>主域名<input id="site-domain" placeholder="example.com" required></label>
+        <label>别名域名<input id="site-aliases" placeholder="www.example.com, api.example.com"></label>
+        <label>网站类型<select id="site-type"><option value="static">静态网站</option><option value="php">PHP 网站</option><option value="proxy">反向代理</option></select></label>
+        <label id="site-root-field">网站目录<input id="site-root" placeholder="自动生成到 /var/www"></label>
+        <label id="site-upstream-field" hidden>上游地址<input id="site-upstream" placeholder="http://127.0.0.1:3000"></label>
+        <label id="site-rewrite-mode-field" hidden>伪静态<select id="site-rewrite-mode"><option value="none">关闭</option><option value="wordpress">WordPress</option><option value="laravel">通用 PHP / Laravel</option><option value="thinkphp">ThinkPHP</option><option value="custom">自定义</option></select></label>
+        <label id="site-rewrite-rules-field" hidden>自定义规则<textarea id="site-rewrite-rules" rows="6" spellcheck="false" placeholder="try_files $uri $uri/ /index.php?$query_string;"></textarea></label>
+        <label class="check-label"><input id="site-ssl" type="checkbox"><span>启用 HTTPS</span></label>
+        <div id="site-cert-fields" class="form-grid" hidden><label>证书路径<input id="site-cert"></label><label>私钥路径<input id="site-key"></label></div>
+      </div>
+      <div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button id="site-submit" class="primary" type="submit">创建网站</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="database-dialog" class="form-dialog">
+    <form id="database-form"><div class="dialog-head"><h2>创建数据库</h2><button class="icon-btn dialog-x" type="button"><i data-lucide="x"></i></button></div><div class="dialog-body form-grid one-column"><label>数据库名称<input id="database-name" required pattern="[A-Za-z0-9_]+"></label><label>字符集<select id="database-charset"><option value="utf8mb4">utf8mb4</option><option value="utf8">utf8</option><option value="latin1">latin1</option></select></label></div><div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit">创建</button></div></form>
+  </dialog>
+
+  <dialog id="certificate-dialog" class="form-dialog">
+    <form id="certificate-form">
+      <div class="dialog-head"><h2>申请证书</h2><button class="icon-btn dialog-x" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div class="dialog-body form-grid one-column">
+        <label>网站<select id="certificate-site" required></select></label>
+        <label>证书域名<input id="certificate-domains" placeholder="example.com, www.example.com" required></label>
+        <label>联系邮箱<input id="certificate-email" type="email" autocomplete="email"></label>
+        <fieldset class="challenge-field"><legend>验证方式</legend><div class="challenge-options">
+          <label><input type="radio" name="certificate-challenge" value="http" checked><span><i data-lucide="globe"></i>HTTP</span></label>
+          <label><input type="radio" name="certificate-challenge" value="dns-cloudflare"><span><i data-lucide="cloud"></i>DNS</span></label>
+        </div></fieldset>
+        <label id="cloudflare-token-field" hidden>Cloudflare API Token<input id="cloudflare-token" type="password" autocomplete="off"></label>
+        <label class="check-label"><input id="certificate-auto-renew" type="checkbox" checked><span>自动续期</span></label>
+      </div>
+      <div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit"><i data-lucide="shield-check"></i><span>申请</span></button></div>
+    </form>
+  </dialog>
+
+  <dialog id="db-user-dialog" class="form-dialog">
+    <form id="db-user-form"><div class="dialog-head"><h2>添加数据库用户</h2><button class="icon-btn dialog-x" type="button"><i data-lucide="x"></i></button></div><div class="dialog-body form-grid one-column"><label>用户名<input id="db-user-name" required pattern="[A-Za-z0-9_]+"></label><label>允许主机<input id="db-user-host" value="localhost" required></label><label>密码<input id="db-user-password" type="password" minlength="12" required></label><label>授权数据库<select id="db-user-database" required></select></label><label>权限<select id="db-user-privileges" multiple><option value="ALL" selected>全部权限</option><option value="SELECT">SELECT</option><option value="INSERT">INSERT</option><option value="UPDATE">UPDATE</option><option value="DELETE">DELETE</option><option value="CREATE">CREATE</option><option value="ALTER">ALTER</option><option value="INDEX">INDEX</option></select></label></div><div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit">创建用户</button></div></form>
+  </dialog>
+
+  <dialog id="container-dialog" class="form-dialog container-dialog">
+    <form id="container-form">
+      <div class="dialog-head"><h2>修改容器配置</h2><button class="icon-btn dialog-x" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div class="dialog-body">
+        <div id="container-compose-warning" class="config-warning" hidden><i data-lucide="triangle-alert"></i><span></span></div>
+        <div class="form-grid">
+          <label>容器名称<input id="container-name" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*"></label>
+          <label>重启策略<select id="container-restart-policy"><option value="no">不自动重启</option><option value="always">始终重启</option><option value="unless-stopped">除非手动停止</option><option value="on-failure">失败时重启</option></select></label>
+          <label>CPU 限制（核，0 为不限）<input id="container-cpus" type="number" min="0" max="1024" step="0.1" value="0" required></label>
+          <label>内存限制（MB，0 为不限）<input id="container-memory" type="number" min="0" step="1" value="0" required></label>
+          <label id="container-retry-field" hidden>最大重试次数<input id="container-retry" type="number" min="0" max="1000" value="0" required></label>
+        </div>
+        <div class="container-config-section"><h3>当前配置</h3><div class="container-config-grid"><div><span>镜像</span><code id="container-image"></code></div><div><span>启动命令</span><code id="container-command"></code></div><div><span>网络</span><code id="container-networks"></code></div><div><span>端口映射</span><code id="container-ports"></code></div><div><span>数据挂载</span><code id="container-mounts"></code></div><div><span>环境变量</span><code id="container-environment"></code></div></div></div>
+      </div>
+      <div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit"><i data-lucide="save"></i><span>保存配置</span></button></div>
+    </form>
+  </dialog>
+
+  <dialog id="container-logs-dialog" class="container-logs-dialog">
+    <div class="dialog-head"><h2 id="container-logs-title">容器日志</h2><button class="icon-btn dialog-x" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+    <pre id="container-logs"></pre>
+  </dialog>
+
+  <dialog id="swap-dialog" class="form-dialog">
+    <form id="swap-form">
+      <div class="dialog-head"><h2>增加交换空间</h2><button class="icon-btn dialog-x" type="button" title="关闭"><i data-lucide="x"></i></button></div>
+      <div class="dialog-body form-grid one-column">
+        <label>交换文件大小（MB）<input id="swap-size" type="number" min="64" max="32768" step="64" value="2048" required></label>
+        <div class="field-note">交换文件将创建在 <code>/var/lib/hostdesk/hostdesk.swap</code>，并自动写入开机挂载配置。</div>
+      </div>
+      <div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit"><i data-lucide="plus"></i><span>创建并启用</span></button></div>
+    </form>
+  </dialog>
+
+  <div id="entry-menu" class="entry-menu" role="menu" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="/vendor/lucide.js"></script>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <script src="/app.js?v=20260721-server-settings1"></script>
+</body>
+</html>
