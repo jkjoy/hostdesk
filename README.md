@@ -43,6 +43,31 @@ chmod +x hostdesk
 
 远程访问建议由 Caddy 或 Nginx 提供 HTTPS，并代理到 `127.0.0.1:8787`。不要直接把明文 HTTP 暴露到公网。
 
+## Alpine 一键安装
+
+在 Alpine Linux 上使用 root 用户运行：
+
+```sh
+apk add --no-cache bash curl && curl -fsSL https://raw.githubusercontent.com/jkjoy/hostdesk/main/install.sh | bash
+```
+
+安装器会自动识别 `386`、`amd64`、`arm64` 或 `armv7` 架构，下载最新 Release 二进制并校验 SHA256，然后交互设置监听地址、端口、文件根目录和数据目录。安装完成后，HostDesk 会注册为 OpenRC 服务并加入默认运行级别。
+
+重复运行安装器可以升级 HostDesk，并默认保留 `/etc/conf.d/hostdesk` 中的现有配置。安装指定版本或使用默认配置进行无人值守安装：
+
+```sh
+bash install.sh --version v1.0.0
+bash install.sh --yes
+```
+
+常用服务命令：
+
+```sh
+rc-service hostdesk status
+rc-service hostdesk restart
+tail -f /var/log/hostdesk.log
+```
+
 服务器管理功能面向 Alpine Linux + OpenRC。Nginx 配置由 HostDesk 直接管理，保存设置或网站前会执行配置检查，失败时自动恢复原配置。
 
 DNS 验证支持 Cloudflare API Token，Token 需要 `Zone:Read` 和 `DNS:Edit` 权限。凭据使用本机随机密钥加密，并保存在权限为 `0600` 的 HostDesk 数据文件中。HTTP 验证要求域名的 80 端口能够访问当前主机；通配符证书必须使用 DNS 验证。
@@ -55,3 +80,14 @@ go build -trimpath -ldflags='-s -w' -o hostdesk .
 ```
 
 构建需要 Go 1.26.3 或更高版本。运行二进制不需要 Go、Node.js、Python、`tar` 或 `unzip`。
+
+## 发布
+
+在 GitHub 上发布 Release 后，工作流会自动构建并上传以下文件：
+
+- `hostdesk-linux-386`
+- `hostdesk-linux-amd64`
+- `hostdesk-linux-arm64`
+- `hostdesk-linux-armv7`
+- `install.sh`
+- `checksums.txt`
