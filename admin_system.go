@@ -49,14 +49,15 @@ type networkOverview struct {
 }
 
 type systemOverview struct {
-	Hostname      string          `json:"hostname"`
-	IPAddresses   []string        `json:"ipAddresses"`
-	Kernel        string          `json:"kernel"`
-	UptimeSeconds uint64          `json:"uptimeSeconds"`
-	CPU           cpuOverview     `json:"cpu"`
-	Memory        resourceUsage   `json:"memory"`
-	Disk          resourceUsage   `json:"disk"`
-	Network       networkOverview `json:"network"`
+	Hostname        string          `json:"hostname"`
+	IPAddresses     []string        `json:"ipAddresses"`
+	PublicIPAddress string          `json:"publicIpAddress"`
+	Kernel          string          `json:"kernel"`
+	UptimeSeconds   uint64          `json:"uptimeSeconds"`
+	CPU             cpuOverview     `json:"cpu"`
+	Memory          resourceUsage   `json:"memory"`
+	Disk            resourceUsage   `json:"disk"`
+	Network         networkOverview `json:"network"`
 }
 
 type cpuSnapshot struct {
@@ -290,6 +291,7 @@ func components() map[string]componentDefinition {
 			Service:  phpService(php),
 		},
 		"mysql": {Packages: []string{"mariadb", "mariadb-client"}, Service: "mariadb"},
+		"ftp":   {Packages: []string{"vsftpd"}, Service: "vsftpd"},
 	}
 }
 
@@ -297,6 +299,25 @@ func runAdmin(timeout time.Duration, command string, args ...string) (string, er
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, command, args...).CombinedOutput()
+	text := strings.TrimSpace(string(output))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return text, fmt.Errorf("操作超时")
+	}
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return text, fmt.Errorf("%s", text)
+	}
+	return text, nil
+}
+
+func runAdminInput(timeout time.Duration, input, command string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	process := exec.CommandContext(ctx, command, args...)
+	process.Stdin = strings.NewReader(input)
+	output, err := process.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return text, fmt.Errorf("操作超时")
@@ -363,6 +384,8 @@ func componentStatus(name string, definition componentDefinition) serviceStatus 
 		status.Version = commandVersion("php", "-v")
 	case "mysql":
 		status.Version = commandVersion("mariadb", "--version")
+	case "ftp":
+		status.Version = commandVersion("vsftpd", "-v")
 	}
 	return status
 }
@@ -373,13 +396,15 @@ func (a *app) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	definitions := components()
 	statuses := make([]serviceStatus, 0, len(definitions))
-	for _, name := range []string{"nginx", "php", "mysql"} {
+	for _, name := range []string{"nginx", "php", "mysql", "ftp"} {
 		statuses = append(statuses, componentStatus(name, definitions[name]))
 	}
+	system := collectSystemOverview()
+	system.PublicIPAddress = a.publicIPAddress()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"services": statuses,
 		"platform": "Alpine Linux / OpenRC",
-		"system":   collectSystemOverview(),
+		"system":   system,
 	})
 }
 
@@ -409,6 +434,11 @@ func (a *app) handleComponentInstall(w http.ResponseWriter, r *http.Request) {
 				_, _ = runAdmin(2*time.Minute, "rc-service", "mariadb", "setup")
 			}
 			_, err = runAdmin(time.Minute, "rc-service", "mariadb", "start")
+		case "ftp":
+			err = ensureVSFTPDConfig()
+			if err == nil {
+				_, err = runAdmin(time.Minute, "rc-service", definition.Service, "start")
+			}
 		}
 	}
 	if err != nil {

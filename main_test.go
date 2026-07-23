@@ -443,6 +443,85 @@ func TestCredentialEncryption(t *testing.T) {
 	}
 }
 
+func TestDNSSettingsAreEncryptedInDatabase(t *testing.T) {
+	dataDir := t.TempDir()
+	a := newAuthTestApp(t, dataDir)
+	a.dataDir = dataDir
+	request := dnsSettingsRequest{
+		DefaultEmail:    "admin@example.com",
+		CloudflareToken: "cloudflare-token-value-123456",
+	}
+	if err := a.saveDNSSettings(request); err != nil {
+		t.Fatal(err)
+	}
+	for key, plain := range map[string]string{settingCloudflareToken: request.CloudflareToken} {
+		stored, err := a.appSetting(key)
+		if err != nil || stored == "" || strings.Contains(stored, plain) {
+			t.Fatalf("setting %s was not encrypted: value=%q err=%v", key, stored, err)
+		}
+	}
+	view, err := a.dnsSettingsView()
+	if err != nil || !view.CloudflareConfigured {
+		t.Fatalf("unexpected DNS settings view: %+v err=%v", view, err)
+	}
+	credentials, err := a.dnsProviderCredentials("cloudflare", "")
+	if err != nil || credentials.Token != request.CloudflareToken {
+		t.Fatalf("Cloudflare credentials did not round trip: %+v err=%v", credentials, err)
+	}
+}
+
+func TestDNSSettingsRejectUpdateAndClearTogether(t *testing.T) {
+	a := newAuthTestApp(t, t.TempDir())
+	for name, request := range map[string]dnsSettingsRequest{
+		"cloudflare": {CloudflareToken: "cloudflare-token-value-123456", ClearCloudflare: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := a.saveDNSSettings(request); err == nil {
+				t.Fatal("simultaneous credential update and clear was accepted")
+			}
+		})
+	}
+}
+
+func TestVersionComparison(t *testing.T) {
+	for _, test := range []struct {
+		current string
+		latest  string
+		want    bool
+	}{
+		{"v1.0.0", "v1.1.0", true},
+		{"v1.2.0", "v1.1.9", false},
+		{"v2.0.0", "v2.0.0", false},
+		{"dev", "v9.0.0", false},
+	} {
+		if got := versionLess(test.current, test.latest); got != test.want {
+			t.Fatalf("versionLess(%q, %q)=%v, want %v", test.current, test.latest, got, test.want)
+		}
+	}
+}
+
+func TestFTPConfigurationAndValidation(t *testing.T) {
+	config := renderVSFTPDConfig()
+	for _, directive := range []string{"anonymous_enable=NO", "local_enable=YES", "write_enable=YES", "chroot_local_user=YES", "local_root=/srv/ftp/$USER", "pasv_min_port=40000", "pasv_max_port=40100"} {
+		if !strings.Contains(config, directive) {
+			t.Fatalf("vsftpd configuration missing %q", directive)
+		}
+	}
+	if !ftpUsernamePattern.MatchString("ftp_user-1") || ftpUsernamePattern.MatchString("Root") {
+		t.Fatal("FTP username validation is incorrect")
+	}
+	if err := validateFTPPassword("strong-password-123"); err != nil {
+		t.Fatalf("valid FTP password rejected: %v", err)
+	}
+	if err := validateFTPPassword("short"); err == nil {
+		t.Fatal("short FTP password accepted")
+	}
+	definition, ok := components()["ftp"]
+	if !ok || definition.Service != "vsftpd" || !slices.Contains(definition.Packages, "vsftpd") {
+		t.Fatalf("FTP component definition invalid: %+v", definition)
+	}
+}
+
 func TestFileSnapshotRestore(t *testing.T) {
 	filename := filepath.Join(t.TempDir(), "config.conf")
 	if err := os.WriteFile(filename, []byte("old\n"), 0600); err != nil {

@@ -72,6 +72,17 @@ func openAuthDatabase(dataDir string) (*sql.DB, error) {
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (scope, identity)
 		)`,
+		`CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS ftp_users (
+			username TEXT PRIMARY KEY,
+			home TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			db.Close()

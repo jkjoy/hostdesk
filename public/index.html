@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>HostDesk</title>
   <link rel="stylesheet" href="/vendor/xterm.css">
-  <link rel="stylesheet" href="/styles.css?v=20260721-server-settings1">
+  <link rel="stylesheet" href="/styles.css?v=20260723-admin2">
 </head>
 <body>
   <section id="setup-view" class="login-shell" hidden>
@@ -108,15 +108,16 @@
       <aside class="admin-sidebar">
         <div class="sidebar-title">服务器管理</div>
         <button class="admin-link active" data-admin-tab="overview"><i data-lucide="gauge"></i><span>概览</span></button>
-        <button class="admin-link" data-admin-tab="server-settings"><i data-lucide="settings"></i><span>服务器设置</span></button>
         <button class="admin-link" data-admin-tab="sites"><i data-lucide="globe-2"></i><span>网站</span></button>
         <button class="admin-link" data-admin-tab="certificates"><i data-lucide="shield-check"></i><span>证书</span></button>
         <button class="admin-link" data-admin-tab="nginx"><i data-lucide="network"></i><span>Nginx</span></button>
         <button class="admin-link" data-admin-tab="php"><i data-lucide="file-code-2"></i><span>PHP</span></button>
         <button class="admin-link" data-admin-tab="databases"><i data-lucide="database"></i><span>数据库</span></button>
+        <button class="admin-link" data-admin-tab="ftp"><i data-lucide="folder-sync"></i><span>FTP</span></button>
         <button class="admin-link" data-admin-tab="containers"><i data-lucide="container"></i><span>容器</span></button>
         <button class="admin-link" data-admin-tab="terminal"><i data-lucide="square-terminal"></i><span>终端</span></button>
         <button class="admin-link" data-admin-tab="account"><i data-lucide="key-round"></i><span>账号安全</span></button>
+        <button class="admin-link" data-admin-tab="server-settings"><i data-lucide="settings"></i><span>服务器设置</span></button>
       </aside>
 
       <section class="admin-pane">
@@ -129,6 +130,7 @@
           <div class="section-heading"><div><h2>服务器</h2><span>主机资源与网络概况</span></div></div>
           <div id="server-summary" class="server-summary"></div>
           <div id="resource-grid" class="resource-grid"></div>
+          <div id="update-status" class="update-status"></div>
           <div class="section-heading"><div><h2>运行环境</h2><span>安装、启动和维护 Web 服务组件</span></div></div>
           <div id="service-grid" class="service-grid"></div>
         </div>
@@ -169,6 +171,13 @@
         </div>
 
         <div id="admin-certificates" class="admin-content" hidden>
+          <form id="dns-settings-form" class="settings-section dns-settings-section">
+            <div class="section-heading"><div><h2>DNS 设置</h2><span>ACME 邮箱与 DNS API 凭据</span></div><button class="primary" type="submit"><i data-lucide="save"></i><span>保存设置</span></button></div>
+            <div class="form-grid dns-email-grid"><label>默认证书邮箱<input id="dns-default-email" type="email" autocomplete="email" placeholder="admin@example.com"></label></div>
+            <div class="dns-provider-grid">
+              <fieldset class="dns-provider"><legend>Cloudflare <span id="cloudflare-status" class="state-badge">未配置</span></legend><label>API Token<input id="dns-cloudflare-token" type="password" autocomplete="new-password" placeholder="留空保持现有凭据"></label><label id="clear-cloudflare-field" class="check-label" hidden><input id="clear-cloudflare" type="checkbox"><span>清除已保存凭据</span></label></fieldset>
+            </div>
+          </form>
           <div class="section-heading"><div><h2>证书</h2><span>Let's Encrypt TLS 证书</span></div><button id="new-certificate-btn" class="primary"><i data-lucide="badge-plus"></i><span>申请证书</span></button></div>
           <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>网站</th><th>域名</th><th>验证</th><th>到期时间</th><th>自动续期</th><th>状态</th><th></th></tr></thead><tbody id="certificate-list"></tbody></table><div id="certificates-empty" class="inline-empty" hidden>暂无托管证书</div></div>
         </div>
@@ -205,6 +214,12 @@
             <section><h3>数据库</h3><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>名称</th><th>表</th><th>大小</th><th></th></tr></thead><tbody id="database-list"></tbody></table><div id="databases-empty" class="inline-empty" hidden>暂无业务数据库</div></div></section>
             <section><h3>数据库用户</h3><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>用户</th><th>允许主机</th><th>认证</th><th></th></tr></thead><tbody id="db-user-list"></tbody></table><div id="db-users-empty" class="inline-empty" hidden>暂无业务用户</div></div></section>
           </div>
+        </div>
+
+        <div id="admin-ftp" class="admin-content" hidden>
+          <div class="section-heading"><div><h2>FTP</h2><span id="ftp-status-text">正在读取服务状态</span></div><div class="heading-actions"><button id="ftp-restart-btn" hidden><i data-lucide="rotate-cw"></i><span>重启服务</span></button><button id="ftp-install-btn" class="primary" hidden><i data-lucide="download"></i><span>安装 FTP</span></button><button id="new-ftp-user-btn" class="primary" hidden><i data-lucide="user-plus"></i><span>添加用户</span></button></div></div>
+          <div class="ftp-summary"><div><span>用户目录</span><strong id="ftp-root">/srv/ftp</strong></div><div><span>被动端口</span><strong id="ftp-passive-ports">40000-40100</strong></div></div>
+          <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>用户</th><th>主目录</th><th>创建时间</th><th>系统状态</th><th></th></tr></thead><tbody id="ftp-user-list"></tbody></table><div id="ftp-users-empty" class="inline-empty" hidden>暂无 FTP 用户</div></div>
         </div>
 
         <div id="admin-containers" class="admin-content" hidden>
@@ -275,9 +290,9 @@
         <label>联系邮箱<input id="certificate-email" type="email" autocomplete="email"></label>
         <fieldset class="challenge-field"><legend>验证方式</legend><div class="challenge-options">
           <label><input type="radio" name="certificate-challenge" value="http" checked><span><i data-lucide="globe"></i>HTTP</span></label>
-          <label><input type="radio" name="certificate-challenge" value="dns-cloudflare"><span><i data-lucide="cloud"></i>DNS</span></label>
+          <label><input type="radio" name="certificate-challenge" value="dns"><span><i data-lucide="cloud"></i>DNS</span></label>
         </div></fieldset>
-        <label id="cloudflare-token-field" hidden>Cloudflare API Token<input id="cloudflare-token" type="password" autocomplete="off"></label>
+        <label id="certificate-provider-field" hidden>DNS 服务商<select id="certificate-provider"><option value="cloudflare">Cloudflare</option></select></label>
         <label class="check-label"><input id="certificate-auto-renew" type="checkbox" checked><span>自动续期</span></label>
       </div>
       <div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit"><i data-lucide="shield-check"></i><span>申请</span></button></div>
@@ -286,6 +301,10 @@
 
   <dialog id="db-user-dialog" class="form-dialog">
     <form id="db-user-form"><div class="dialog-head"><h2>添加数据库用户</h2><button class="icon-btn dialog-x" type="button"><i data-lucide="x"></i></button></div><div class="dialog-body form-grid one-column"><label>用户名<input id="db-user-name" required pattern="[A-Za-z0-9_]+"></label><label>允许主机<input id="db-user-host" value="localhost" required></label><label>密码<input id="db-user-password" type="password" minlength="12" required></label><label>授权数据库<select id="db-user-database" required></select></label><label>权限<select id="db-user-privileges" multiple><option value="ALL" selected>全部权限</option><option value="SELECT">SELECT</option><option value="INSERT">INSERT</option><option value="UPDATE">UPDATE</option><option value="DELETE">DELETE</option><option value="CREATE">CREATE</option><option value="ALTER">ALTER</option><option value="INDEX">INDEX</option></select></label></div><div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit">创建用户</button></div></form>
+  </dialog>
+
+  <dialog id="ftp-user-dialog" class="form-dialog">
+    <form id="ftp-user-form"><div class="dialog-head"><h2 id="ftp-user-dialog-title">添加 FTP 用户</h2><button class="icon-btn dialog-x" type="button" title="关闭"><i data-lucide="x"></i></button></div><div class="dialog-body form-grid one-column"><label>用户名<input id="ftp-user-name" minlength="3" maxlength="32" pattern="[a-z_][a-z0-9_-]{2,31}" required autocomplete="username"></label><label>密码<input id="ftp-user-password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"></label><label>确认密码<input id="ftp-user-confirm-password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"></label><div class="field-note">用户文件保存在 <code id="ftp-user-home">/srv/ftp/&lt;用户名&gt;</code></div></div><div class="dialog-actions"><button class="dialog-cancel" type="button">取消</button><button class="primary" type="submit">保存用户</button></div></form>
   </dialog>
 
   <dialog id="container-dialog" class="form-dialog container-dialog">
@@ -327,6 +346,6 @@
   <script src="/vendor/lucide.js"></script>
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
-  <script src="/app.js?v=20260721-server-settings1"></script>
+  <script src="/app.js?v=20260723-admin2"></script>
 </body>
 </html>

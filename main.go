@@ -62,9 +62,15 @@ type app struct {
 	allowedSSH      map[string]bool
 	hostFingerprint string
 
-	mu       sync.Mutex
-	adminMu  sync.Mutex
-	sessions map[string]*sessionInfo
+	mu              sync.Mutex
+	adminMu         sync.Mutex
+	publicIPMu      sync.Mutex
+	updateMu        sync.Mutex
+	sessions        map[string]*sessionInfo
+	publicIP        string
+	publicIPExpires time.Time
+	updateCache     updateStatus
+	updateExpires   time.Time
 }
 
 type apiError struct {
@@ -115,6 +121,7 @@ func main() {
 	mux.HandleFunc("POST /api/archive", a.handleArchive)
 	mux.HandleFunc("POST /api/extract", a.handleExtract)
 	mux.HandleFunc("GET /api/admin/overview", a.handleAdminOverview)
+	mux.HandleFunc("GET /api/admin/update", a.handleUpdateCheck)
 	mux.HandleFunc("GET /api/admin/server-settings", a.handleServerSettingsGet)
 	mux.HandleFunc("PUT /api/admin/server-settings", a.handleServerSettingsPut)
 	mux.HandleFunc("POST /api/admin/server-settings/swap", a.handleSwapCreate)
@@ -143,6 +150,12 @@ func main() {
 	mux.HandleFunc("GET /api/admin/certificates", a.handleCertificatesList)
 	mux.HandleFunc("POST /api/admin/certificates", a.handleCertificateCreate)
 	mux.HandleFunc("POST /api/admin/certificates/{id}/renew", a.handleCertificateRenew)
+	mux.HandleFunc("GET /api/admin/dns-settings", a.handleDNSSettingsGet)
+	mux.HandleFunc("PUT /api/admin/dns-settings", a.handleDNSSettingsPut)
+	mux.HandleFunc("GET /api/admin/ftp", a.handleFTPGet)
+	mux.HandleFunc("POST /api/admin/ftp/users", a.handleFTPUserCreate)
+	mux.HandleFunc("PUT /api/admin/ftp/users/{username}", a.handleFTPUserUpdate)
+	mux.HandleFunc("DELETE /api/admin/ftp/users/{username}", a.handleFTPUserDelete)
 	mux.HandleFunc("GET /api/admin/containers", a.handleContainersList)
 	mux.HandleFunc("GET /api/admin/containers/{id}", a.handleContainerGet)
 	mux.HandleFunc("PUT /api/admin/containers/{id}", a.handleContainerUpdate)

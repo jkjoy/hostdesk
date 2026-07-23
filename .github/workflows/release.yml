@@ -41,9 +41,10 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
+          VERSION: ${{ github.event.release.tag_name }}
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags='-s -w' -o "dist/${{ matrix.asset }}" .
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/${{ matrix.asset }}" .
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

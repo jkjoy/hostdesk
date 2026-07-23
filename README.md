@@ -12,6 +12,8 @@ HostDesk 是一个单机自托管的文件管理器和 WebSSH 工作台。前端
 - 通过 HTTP-01 或 Cloudflare DNS-01 申请 Let's Encrypt 证书并自动绑定网站
 - 每 12 小时检查证书，剩余 30 天时自动续期并安全重载 Nginx
 - 管理 PHP 设置与扩展、MariaDB 数据库、用户和授权
+- 安装和管理 vsftpd，创建、重置密码及删除独立 FTP 用户
+- 在后台检查 GitHub Release，新版本发布后显示升级提示
 - 使用原生 Nginx 直接提供 `80/443` 服务
 - 首次使用时创建管理员，SQLite 持久化账号与 Scrypt 密码哈希
 - 后台修改管理员用户名和密码，修改后自动撤销其他会话
@@ -70,7 +72,9 @@ tail -f /var/log/hostdesk.log
 
 服务器管理功能面向 Alpine Linux + OpenRC。Nginx 配置由 HostDesk 直接管理，保存设置或网站前会执行配置检查，失败时自动恢复原配置。
 
-DNS 验证支持 Cloudflare API Token，Token 需要 `Zone:Read` 和 `DNS:Edit` 权限。凭据使用本机随机密钥加密，并保存在权限为 `0600` 的 HostDesk 数据文件中。HTTP 验证要求域名的 80 端口能够访问当前主机；通配符证书必须使用 DNS 验证。
+DNS 验证支持 Cloudflare API Token，Token 需要 `Zone:Read` 和 `DNS:Edit` 权限。凭据使用本机随机密钥加密后写入 SQLite，不通过证书申请接口或后台页面回显。HTTP 验证要求域名的 80 端口能够访问当前主机；通配符证书必须使用 DNS 验证。
+
+FTP 功能安装并管理 Alpine 的 vsftpd。FTP 用户主目录固定为 `/srv/ftp/<用户名>`，删除用户时保留其文件。服务器防火墙和云安全组需要按实际使用开放 TCP 21 以及被动模式端口 `40000-40100`；公网部署建议优先使用 SFTP，或在可信网络中使用 FTP。
 
 ## 构建
 

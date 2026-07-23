@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { csrf: "", user: "", root: "", path: "", entries: [], selected: new Set(), editorPath: "", recent: [], adminTab: "overview", overview: null, sites: [], certificates: [], databases: [], containers: [] };
+const state = { csrf: "", user: "", root: "", path: "", entries: [], selected: new Set(), editorPath: "", recent: [], adminTab: "overview", overview: null, sites: [], certificates: [], dnsSettings: {}, databases: [], ftpUsers: [], containers: [] };
 let terminal;
 let fitAddon;
 let sshSocket;
@@ -7,6 +7,7 @@ let sshPrivateKey = "";
 let terminalFitFrame = 0;
 let editingSite = null;
 let editingContainer = null;
+let editingFTPUser = null;
 
 function refreshIcons(root = document) {
   window.lucide?.createIcons({ root, attrs: { "stroke-width": 1.8 } });
@@ -501,6 +502,7 @@ const adminTabs = {
   nginx: ["Nginx", "全局设置与配置检查"],
   php: ["PHP", "PHP-FPM 设置与扩展"],
   databases: ["数据库", "MariaDB/MySQL 数据与用户"],
+  ftp: ["FTP", "vsftpd 服务与用户"],
   containers: ["容器管理", "Docker 容器与运行配置"],
   account: ["账号安全", "管理员凭据与登录保护"]
 };
@@ -520,6 +522,7 @@ async function loadAdminTab(tab) {
     if (tab === "nginx") await loadNginxSettings();
     if (tab === "php") await loadPHP();
     if (tab === "databases") await loadDatabases();
+    if (tab === "ftp") await loadFTP();
     if (tab === "containers") await loadContainers();
     if (tab === "account") await loadAccount();
   } catch (error) { toast(error.message, "error"); }
@@ -605,11 +608,11 @@ async function loadServerSettings() {
 }
 
 function serviceLabel(name) {
-  return { nginx: "Nginx", php: "PHP-FPM", mysql: "MariaDB" }[name] || name;
+  return { nginx: "Nginx", php: "PHP-FPM", mysql: "MariaDB", ftp: "vsftpd" }[name] || name;
 }
 
 function serviceIcon(name) {
-  return { nginx: "network", php: "file-code-2", mysql: "database" }[name] || "box";
+  return { nginx: "network", php: "file-code-2", mysql: "database", ftp: "folder-sync" }[name] || "box";
 }
 
 function serviceCommandButton(iconName, title, handler, className = "") {
@@ -696,7 +699,7 @@ function renderSystemOverview(system) {
 
   const facts = document.createElement("dl");
   for (const [label, value] of [
-    ["IP 地址", system.ipAddresses?.join(" · ") || "暂无外部网卡地址"],
+    ["公网 IP", system.publicIpAddress || "暂未获取"],
     ["运行时间", formatUptime(system.uptimeSeconds)],
   ]) {
     const fact = document.createElement("div");
@@ -732,10 +735,11 @@ async function runAdminAction(button, action, successMessage) {
 }
 
 async function loadAdminOverview() {
-  const data = await api("/api/admin/overview");
+  const [data, update] = await Promise.all([api("/api/admin/overview"), api("/api/admin/update")]);
   state.overview = data;
   $("#admin-subtitle").textContent = data.platform;
   renderSystemOverview(data.system || {});
+  renderUpdateStatus(update);
   const grid = $("#service-grid");
   grid.replaceChildren();
   for (const service of data.services) {
@@ -785,6 +789,39 @@ async function loadAdminOverview() {
     grid.append(card);
   }
   refreshIcons(grid);
+}
+
+function renderUpdateStatus(update) {
+  const container = $("#update-status");
+  container.replaceChildren();
+  container.classList.toggle("update-available", Boolean(update.updateAvailable));
+  const info = document.createElement("div");
+  const icon = document.createElement("i");
+  icon.dataset.lucide = update.updateAvailable ? "circle-arrow-up" : "badge-check";
+  const text = document.createElement("div");
+  const title = document.createElement("strong");
+  const detail = document.createElement("span");
+  title.textContent = update.updateAvailable ? `发现新版本 ${update.latestVersion}` : "HostDesk 已是最新版本";
+  if (update.error) title.textContent = "暂时无法检查更新";
+  const current = update.currentVersion === "dev" ? "开发构建" : update.currentVersion;
+  detail.textContent = update.error || `当前 ${current}${update.latestVersion ? ` · 最新 ${update.latestVersion}` : ""}`;
+  text.append(title, detail);
+  info.append(icon, text);
+  const actions = document.createElement("div");
+  actions.className = "update-actions";
+  const refresh = serviceCommandButton("refresh-cw", "检查更新", async (button) => {
+    button.disabled = true;
+    try { renderUpdateStatus(await api("/api/admin/update?refresh=1")); }
+    catch (error) { toast(error.message, "error"); }
+    finally { button.disabled = false; }
+  });
+  actions.append(refresh);
+  if (update.releaseUrl) {
+    const release = serviceCommandButton("external-link", "查看版本", () => window.open(update.releaseUrl, "_blank", "noopener"), update.updateAvailable ? "primary" : "");
+    actions.append(release);
+  }
+  container.append(info, actions);
+  refreshIcons(container);
 }
 
 async function loadNginxSettings() {
@@ -909,6 +946,20 @@ function certificateChallengeLabel(value) {
   return value === "dns-cloudflare" ? "DNS / Cloudflare" : "HTTP";
 }
 
+function renderDNSSettings(settings) {
+  state.dnsSettings = settings || {};
+  $("#dns-default-email").value = settings.defaultEmail || "";
+  for (const [name, configured] of [["cloudflare", settings.cloudflareConfigured]]) {
+    const status = $(`#${name}-status`);
+    status.textContent = configured ? "已配置" : "未配置";
+    status.className = `state-badge ${configured ? "running" : ""}`;
+    $(`#clear-${name}-field`).hidden = !configured;
+    $(`#clear-${name}`).checked = false;
+  }
+  $("#dns-cloudflare-token").value = "";
+  $("#certificate-provider").options[0].textContent = `Cloudflare · ${settings.cloudflareConfigured ? "已配置" : "未配置"}`;
+}
+
 function populateCertificateSites() {
   const select = $("#certificate-site");
   const current = select.value;
@@ -928,16 +979,16 @@ function updateCertificateDomains() {
 }
 
 function updateCertificateChallenge() {
-  const challenge = document.querySelector('input[name="certificate-challenge"]:checked').value;
-  const dns = challenge === "dns-cloudflare";
-  $("#cloudflare-token-field").hidden = !dns;
-  $("#cloudflare-token").required = dns;
+  const dns = document.querySelector('input[name="certificate-challenge"]:checked').value === "dns";
+  $("#certificate-provider-field").hidden = !dns;
+  $("#certificate-provider").required = dns;
 }
 
 async function loadCertificates() {
-  const [data, sitesData] = await Promise.all([api("/api/admin/certificates"), api("/api/admin/sites")]);
+  const [data, sitesData, settings] = await Promise.all([api("/api/admin/certificates"), api("/api/admin/sites"), api("/api/admin/dns-settings")]);
   state.certificates = data.certificates;
   state.sites = sitesData.sites;
+  renderDNSSettings(settings);
   populateCertificateSites();
   const tbody = $("#certificate-list");
   tbody.replaceChildren();
@@ -1041,6 +1092,70 @@ async function loadDatabases() {
   }
   $("#db-users-empty").hidden = userData.users.length > 0;
   refreshIcons($("#admin-databases"));
+}
+
+function openFTPUserDialog(user = null) {
+  editingFTPUser = user;
+  $("#ftp-user-form").reset();
+  $("#ftp-user-dialog-title").textContent = user ? `重置 ${user.username} 的密码` : "添加 FTP 用户";
+  $("#ftp-user-name").disabled = Boolean(user);
+  $("#ftp-user-name").value = user?.username || "";
+  $("#ftp-user-home").textContent = user?.home || "/srv/ftp/<用户名>";
+  $("#ftp-user-dialog").showModal();
+  (user ? $("#ftp-user-password") : $("#ftp-user-name")).focus();
+}
+
+async function loadFTP() {
+  const data = await api("/api/admin/ftp");
+  const status = data.status || {};
+  state.ftpUsers = data.users || [];
+  $("#ftp-root").textContent = data.root || "/srv/ftp";
+  $("#ftp-passive-ports").textContent = data.passivePorts || "40000-40100";
+  $("#ftp-status-text").textContent = !status.installed ? "vsftpd 尚未安装" : status.running ? "vsftpd 运行中" : "vsftpd 已停止";
+  $("#ftp-install-btn").hidden = Boolean(status.installed);
+  $("#ftp-restart-btn").hidden = !status.installed;
+  $("#ftp-restart-btn").dataset.action = status.running ? "restart" : "start";
+  $("#ftp-restart-btn span").textContent = status.running ? "重启服务" : "启动服务";
+  $("#new-ftp-user-btn").hidden = !status.installed;
+
+  const list = $("#ftp-user-list");
+  list.replaceChildren();
+  for (const user of state.ftpUsers) {
+    const row = document.createElement("tr");
+    const name = document.createElement("td");
+    const strong = document.createElement("strong");
+    strong.textContent = user.username;
+    name.append(strong);
+    const home = document.createElement("td");
+    const code = document.createElement("code");
+    code.textContent = user.home;
+    home.append(code);
+    const created = document.createElement("td");
+    created.textContent = user.createdAt ? new Date(user.createdAt).toLocaleString("zh-CN", { hour12: false }) : "-";
+    const system = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = `state-badge ${user.systemPresent ? "running" : ""}`;
+    badge.textContent = user.systemPresent ? "正常" : "系统用户缺失";
+    system.append(badge);
+    const actions = document.createElement("td");
+    const password = iconButton("key-round", "重置密码", "ftp-password");
+    password.className = "row-command";
+    password.disabled = !user.systemPresent;
+    password.addEventListener("click", () => openFTPUserDialog(user));
+    const remove = iconButton("user-minus", "删除 FTP 用户", "ftp-remove");
+    remove.className = "row-command danger-ghost";
+    remove.addEventListener("click", async () => {
+      const approved = await promptDialog({ title: `删除 FTP 用户 ${user.username}`, message: `系统账号将被删除，文件目录 ${user.home} 会保留。`, confirmText: "删除", danger: true, input: false });
+      if (approved) runAdminAction(remove, () => api(`/api/admin/ftp/users/${encodeURIComponent(user.username)}`, { method: "DELETE" }), "FTP 用户已删除，文件目录已保留");
+    });
+    actions.append(password, remove);
+    row.append(name, home, created, system, actions);
+    list.append(row);
+  }
+  const empty = $("#ftp-users-empty");
+  empty.hidden = state.ftpUsers.length > 0;
+  empty.textContent = status.installed ? "暂无 FTP 用户" : "安装 FTP 服务后可添加用户";
+  refreshIcons($("#admin-ftp"));
 }
 
 function containerStateLabel(container) {
@@ -1339,6 +1454,7 @@ $("#new-certificate-btn").addEventListener("click", () => {
   if (!state.sites.length) { toast("请先添加网站", "error"); return; }
   $("#certificate-form").reset();
   $("#certificate-auto-renew").checked = true;
+  $("#certificate-email").value = state.dnsSettings.defaultEmail || "";
   populateCertificateSites();
   updateCertificateDomains();
   updateCertificateChallenge();
@@ -1349,7 +1465,8 @@ document.querySelectorAll('input[name="certificate-challenge"]').forEach((input)
 $("#certificate-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.submitter;
-  const challenge = document.querySelector('input[name="certificate-challenge"]:checked').value;
+  const challengeType = document.querySelector('input[name="certificate-challenge"]:checked').value;
+  const challenge = challengeType === "dns" ? `dns-${$("#certificate-provider").value}` : "http";
   button.disabled = true;
   try {
     await api("/api/admin/certificates", { method: "POST", body: {
@@ -1357,7 +1474,6 @@ $("#certificate-form").addEventListener("submit", async (event) => {
       domains: $("#certificate-domains").value.split(",").map((value) => value.trim()).filter(Boolean),
       email: $("#certificate-email").value.trim(),
       challenge,
-      cloudflareToken: challenge === "dns-cloudflare" ? $("#cloudflare-token").value.trim() : "",
       autoRenew: $("#certificate-auto-renew").checked
     } });
     $("#certificate-dialog").close();
@@ -1366,6 +1482,30 @@ $("#certificate-form").addEventListener("submit", async (event) => {
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }
 });
+
+$("#dns-settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    const settings = await api("/api/admin/dns-settings", { method: "PUT", body: {
+      defaultEmail: $("#dns-default-email").value.trim(),
+      cloudflareToken: $("#dns-cloudflare-token").value.trim(),
+      clearCloudflare: $("#clear-cloudflare").checked
+    } });
+    renderDNSSettings(settings);
+    toast("DNS 设置已保存");
+  } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; }
+});
+
+for (const [input, clear] of [
+  ["#dns-cloudflare-token", "#clear-cloudflare"],
+]) {
+  $(input).addEventListener("input", () => {
+    if ($(input).value) $(clear).checked = false;
+  });
+}
 
 $("#php-settings-form").addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1403,6 +1543,38 @@ $("#db-user-form").addEventListener("submit", async (event) => {
       database: $("#db-user-database").value, privileges
     } });
     $("#db-user-dialog").close(); toast("数据库用户已创建"); await loadDatabases();
+  } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; }
+});
+
+$("#ftp-install-btn").addEventListener("click", (event) => runAdminAction(event.currentTarget, () => api("/api/admin/components/ftp/install", { method: "POST" }), "FTP 服务安装完成"));
+$("#ftp-restart-btn").addEventListener("click", (event) => {
+  const action = event.currentTarget.dataset.action || "restart";
+  runAdminAction(event.currentTarget, () => api(`/api/admin/services/vsftpd/${action}`, { method: "POST" }), "FTP 服务状态已更新");
+});
+$("#new-ftp-user-btn").addEventListener("click", () => openFTPUserDialog());
+$("#ftp-user-name").addEventListener("input", () => {
+  if (!editingFTPUser) $("#ftp-user-home").textContent = `/srv/ftp/${$("#ftp-user-name").value.trim() || "<用户名>"}`;
+});
+$("#ftp-user-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.submitter;
+  const password = $("#ftp-user-password").value;
+  if (password !== $("#ftp-user-confirm-password").value) {
+    toast("两次输入的 FTP 密码不一致", "error");
+    return;
+  }
+  button.disabled = true;
+  try {
+    const username = editingFTPUser?.username || $("#ftp-user-name").value.trim();
+    await api(editingFTPUser ? `/api/admin/ftp/users/${encodeURIComponent(username)}` : "/api/admin/ftp/users", {
+      method: editingFTPUser ? "PUT" : "POST",
+      body: editingFTPUser ? { password } : { username, password }
+    });
+    $("#ftp-user-dialog").close();
+    toast(editingFTPUser ? "FTP 密码已更新" : "FTP 用户已创建");
+    editingFTPUser = null;
+    await loadFTP();
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }
 });

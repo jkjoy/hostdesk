@@ -56,12 +56,11 @@ type certificateRecord struct {
 type tokenString string
 
 type certificateRequest struct {
-	SiteID          string   `json:"siteId"`
-	Domains         []string `json:"domains"`
-	Email           string   `json:"email"`
-	Challenge       string   `json:"challenge"`
-	CloudflareToken string   `json:"cloudflareToken"`
-	AutoRenew       bool     `json:"autoRenew"`
+	SiteID    string   `json:"siteId"`
+	Domains   []string `json:"domains"`
+	Email     string   `json:"email"`
+	Challenge string   `json:"challenge"`
+	AutoRenew bool     `json:"autoRenew"`
 }
 
 type certificateView struct {
@@ -225,12 +224,6 @@ func validateCertificateRequest(request *certificateRequest, sites []siteDefinit
 	if request.Challenge == "http" && !site.Enabled {
 		return siteDefinition{}, &apiError{http.StatusConflict, "HTTP 验证要求网站处于启用状态"}
 	}
-	if request.Challenge == "dns-cloudflare" && request.CloudflareToken == "" && (existing == nil || existing.EncryptedDNS == "") {
-		return siteDefinition{}, &apiError{http.StatusBadRequest, "请输入 Cloudflare API Token"}
-	}
-	if request.CloudflareToken != "" && (len(request.CloudflareToken) < 20 || len(request.CloudflareToken) > 512) {
-		return siteDefinition{}, &apiError{http.StatusBadRequest, "Cloudflare API Token 长度无效"}
-	}
 	return *site, nil
 }
 
@@ -355,7 +348,7 @@ func (a *app) saveACMEAccount(disk *acmeAccountDisk) error {
 	return writeAtomic(a.acmeAccountPath(), append(encoded, '\n'), 0600)
 }
 
-func (a *app) newACMEClient(email, challenge, dnsToken string) (*lego.Client, error) {
+func (a *app) newACMEClient(email, challenge string, credentials dnsProviderCredentials) (*lego.Client, error) {
 	user, disk, err := a.loadACMEUser(email)
 	if err != nil {
 		return nil, err
@@ -372,8 +365,8 @@ func (a *app) newACMEClient(email, challenge, dnsToken string) (*lego.Client, er
 		err = client.Challenge.SetHTTP01Provider(webrootProvider{root: acmeHTTPRoot})
 	case "dns-cloudflare":
 		providerConfig := cloudflare.NewDefaultConfig()
-		providerConfig.AuthToken = dnsToken
-		providerConfig.ZoneToken = dnsToken
+		providerConfig.AuthToken = credentials.Token
+		providerConfig.ZoneToken = credentials.Token
 		provider, providerErr := cloudflare.NewDNSProviderConfig(providerConfig)
 		if providerErr != nil {
 			return nil, providerErr
@@ -440,7 +433,7 @@ func (a *app) activateSiteCertificate(siteID, certPath, keyPath string) error {
 	return nil
 }
 
-func (a *app) issueCertificate(record certificateRecord, plainToken string) (certificateRecord, error) {
+func (a *app) issueCertificate(record certificateRecord) (certificateRecord, error) {
 	if record.Challenge == "http" {
 		sites, err := a.loadSites()
 		if err != nil {
@@ -458,14 +451,19 @@ func (a *app) issueCertificate(record certificateRecord, plainToken string) (cer
 			}
 		}
 	}
-	if record.Challenge == "dns-cloudflare" && plainToken == "" {
+	var credentials dnsProviderCredentials
+	if strings.HasPrefix(record.Challenge, "dns-") {
+		provider := record.Provider
+		if provider == "" {
+			provider = strings.TrimPrefix(record.Challenge, "dns-")
+		}
 		var err error
-		plainToken, err = a.decryptCredential(record.EncryptedDNS)
+		credentials, err = a.dnsProviderCredentials(provider, record.EncryptedDNS)
 		if err != nil {
 			return record, err
 		}
 	}
-	client, err := a.newACMEClient(record.Email, record.Challenge, plainToken)
+	client, err := a.newACMEClient(record.Email, record.Challenge, credentials)
 	if err != nil {
 		return record, err
 	}
@@ -515,12 +513,6 @@ func (a *app) issueCertificate(record certificateRecord, plainToken string) (cer
 	record.ExpiresAt = expiresAt
 	record.LastAttempt = time.Now()
 	record.LastError = ""
-	if record.Challenge == "dns-cloudflare" && plainToken != "" {
-		record.EncryptedDNS, err = a.encryptCredential(plainToken)
-		if err != nil {
-			return record, err
-		}
-	}
 	return record, nil
 }
 
@@ -561,6 +553,14 @@ func (a *app) handleCertificateCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	a.adminMu.Lock()
 	defer a.adminMu.Unlock()
+	if strings.TrimSpace(request.Email) == "" {
+		defaultEmail, settingErr := a.appSetting(settingACMEEmail)
+		if settingErr != nil {
+			writeError(w, settingErr)
+			return
+		}
+		request.Email = defaultEmail
+	}
 	sites, err := a.loadSites()
 	if err != nil {
 		writeError(w, err)
@@ -587,8 +587,16 @@ func (a *app) handleCertificateCreate(w http.ResponseWriter, r *http.Request) {
 		ID: request.SiteID, SiteID: request.SiteID, Domains: request.Domains, Email: request.Email,
 		Challenge: request.Challenge, AutoRenew: request.AutoRenew,
 	}
-	if request.Challenge == "dns-cloudflare" {
-		record.Provider = "cloudflare"
+	if strings.HasPrefix(request.Challenge, "dns-") {
+		record.Provider = strings.TrimPrefix(request.Challenge, "dns-")
+		var legacyCredential tokenString
+		if existing != nil {
+			legacyCredential = existing.EncryptedDNS
+		}
+		if _, credentialErr := a.dnsProviderCredentials(record.Provider, legacyCredential); credentialErr != nil {
+			writeError(w, credentialErr)
+			return
+		}
 	}
 	if existing != nil {
 		record.Certificate = existing.Certificate
@@ -598,7 +606,7 @@ func (a *app) handleCertificateCreate(w http.ResponseWriter, r *http.Request) {
 		record.ExpiresAt = existing.ExpiresAt
 		record.EncryptedDNS = existing.EncryptedDNS
 	}
-	record, err = a.issueCertificate(record, request.CloudflareToken)
+	record, err = a.issueCertificate(record)
 	if err != nil {
 		writeError(w, &apiError{http.StatusBadGateway, "证书申请失败：" + err.Error()})
 		return
@@ -627,7 +635,7 @@ func (a *app) renewCertificate(id string) (certificateRecord, error) {
 		return certificateRecord{}, &apiError{http.StatusNotFound, "证书不存在"}
 	}
 	records[index].LastAttempt = time.Now()
-	record, issueErr := a.issueCertificate(records[index], "")
+	record, issueErr := a.issueCertificate(records[index])
 	if issueErr != nil {
 		records[index].LastAttempt = time.Now()
 		records[index].LastError = issueErr.Error()
