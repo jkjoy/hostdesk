@@ -72,6 +72,8 @@ async function enterApp(session) {
   $("#app").hidden = false;
   document.body.classList.add("app-active");
   renderRecent();
+  state.adminTab = "overview";
+  switchView("admin");
   await loadFiles("");
 }
 
