@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>HostDesk</title>
   <link rel="stylesheet" href="/vendor/xterm.css">
-  <link rel="stylesheet" href="/styles.css?v=20260723-service-version1">
+  <link rel="stylesheet" href="/styles.css?v=20260723-vue-bridge1">
 </head>
 <body>
   <section id="setup-view" class="login-shell" hidden>
@@ -48,7 +48,7 @@
 
   <div id="app" class="app-shell" hidden>
     <header class="topbar">
-      <div class="app-brand"><span class="brand-mark small"><i data-lucide="server"></i></span><strong>HostDesk</strong></div>
+      <a class="app-brand" href="/"><span class="brand-mark small"><i data-lucide="server"></i></span><strong>HostDesk</strong></a>
       <nav class="view-switch" aria-label="工作区">
         <button class="active" data-view="files"><i data-lucide="folder"></i><span>文件</span></button>
         <button data-view="admin"><i data-lucide="panels-top-left"></i><span>服务器</span></button>
@@ -107,7 +107,7 @@
     <main id="admin-view" class="admin-workspace" hidden>
       <aside class="admin-sidebar">
         <div class="sidebar-title">服务器管理</div>
-        <button class="admin-link active" data-admin-tab="overview"><i data-lucide="gauge"></i><span>概览</span></button>
+        <a class="admin-link" href="/"><i data-lucide="gauge"></i><span>概览</span></a>
         <button class="admin-link" data-admin-tab="sites"><i data-lucide="globe-2"></i><span>网站</span></button>
         <button class="admin-link" data-admin-tab="certificates"><i data-lucide="shield-check"></i><span>证书</span></button>
         <button class="admin-link" data-admin-tab="nginx"><i data-lucide="network"></i><span>Nginx</span></button>
@@ -346,6 +346,6 @@
   <script src="/vendor/lucide.js"></script>
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
-  <script src="/app.js?v=20260723-service-version1"></script>
+  <script src="/app.js?v=20260723-vue-bridge1"></script>
 </body>
 </html>

@@ -72,8 +72,10 @@ async function enterApp(session) {
   $("#app").hidden = false;
   document.body.classList.add("app-active");
   renderRecent();
-  state.adminTab = "overview";
-  switchView("admin");
+  const params = new URLSearchParams(location.search);
+  const requestedTab = params.get("tab");
+  if (requestedTab && adminTabs[requestedTab]) state.adminTab = requestedTab;
+  switchView(params.get("view") === "files" ? "files" : "admin");
   await loadFiles("");
 }
 

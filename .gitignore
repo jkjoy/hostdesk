@@ -2,6 +2,7 @@
 /hostdesk
 /hostdesk.previous
 /dist/
+/node_modules/
 
 # Runtime data and local configuration
 *.db

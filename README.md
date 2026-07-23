@@ -79,11 +79,13 @@ FTP 功能安装并管理 Alpine 的 vsftpd。FTP 用户主目录固定为 `/srv
 ## 构建
 
 ```sh
+npm ci
+npm run build
 go test ./...
 go build -trimpath -ldflags='-s -w' -o hostdesk .
 ```
 
-构建需要 Go 1.26.3 或更高版本。运行二进制不需要 Go、Node.js、Python、`tar` 或 `unzip`。
+前端使用 Vue 3、TypeScript 和 Vite，构建需要 Node.js 22 及 Go 1.26.3 或更高版本。运行二进制不需要 Go、Node.js、Python、`tar` 或 `unzip`。
 
 ## 发布
 

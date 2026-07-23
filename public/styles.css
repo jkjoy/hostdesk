@@ -60,7 +60,7 @@ button.wide { width: 100%; height: 42px; }
 
 .app-shell { height: 100vh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .topbar { height: 58px; flex: 0 0 58px; display: grid; grid-template-columns: 240px 1fr 240px; align-items: center; padding: 0 18px; background: #17201d; color: white; border-bottom: 1px solid #2b3532; }
-.app-brand { display: flex; align-items: center; gap: 10px; font-size: 16px; }
+.app-brand { display: flex; align-items: center; gap: 10px; color: inherit; font-size: 16px; text-decoration: none; }
 .view-switch { justify-self: center; display: flex; padding: 3px; background: #29322f; border-radius: 7px; }
 .view-switch button { min-height: 32px; border: 0; color: #b9c4c0; background: transparent; }
 .view-switch button:hover { color: white; }
@@ -138,7 +138,9 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 
 .admin-workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); overflow: hidden; background: var(--bg); }
 .admin-sidebar { padding: 20px 12px; overflow-y: auto; background: #f8faf9; border-right: 1px solid var(--line); }
-.admin-link { width: 100%; justify-content: flex-start; border: 0; background: transparent; color: #46514d; margin-bottom: 3px; }
+.admin-link { width: 100%; min-height: 36px; margin-bottom: 3px; padding: 0 12px; display: flex; align-items: center; justify-content: flex-start; gap: 7px; border: 0; border-radius: 6px; background: transparent; color: #46514d; text-decoration: none; }
+.admin-link svg { width: 17px; height: 17px; flex: none; }
+.admin-link:hover { background: var(--surface-2); }
 .admin-link.active { background: var(--accent-soft); color: var(--accent-dark); font-weight: 700; }
 .admin-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: 68px minmax(0, 1fr); overflow: hidden; }
 .admin-topbar { padding: 0 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); background: var(--surface); }
