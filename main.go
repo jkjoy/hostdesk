@@ -886,7 +886,8 @@ func (a *app) handleDownload(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, info.ModTime(), file)
 }
 
-func addToArchive(writer *tar.Writer, root, source string) error {
+func addToArchive(writer *tar.Writer, source string) error {
+	root := filepath.Dir(source)
 	return filepath.Walk(source, func(current string, info fs.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -976,7 +977,7 @@ func (a *app) handleArchive(w http.ResponseWriter, r *http.Request) {
 			err = resolveErr
 			break
 		}
-		if resolveErr = addToArchive(tarWriter, a.rootReal, target.Real); resolveErr != nil {
+		if resolveErr = addToArchive(tarWriter, target.Real); resolveErr != nil {
 			err = resolveErr
 			break
 		}

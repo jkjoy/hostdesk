@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -14,6 +15,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -917,6 +920,40 @@ func TestSafeArchiveName(t *testing.T) {
 	}
 	if !safeArchiveName("folder/file.txt") {
 		t.Fatal("safe path rejected")
+	}
+}
+
+func TestAddToArchiveUsesSelectedNameAsRoot(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "site", "public")
+	if err := os.MkdirAll(selected, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(selected, "index.php"), []byte("<?php phpinfo();"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	writer := tar.NewWriter(&output)
+	if err := addToArchive(writer, selected); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(&output)
+	var names []string
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, header.Name)
+	}
+	if !slices.Equal(names, []string{"public/", "public/index.php"}) {
+		t.Fatalf("unexpected archive paths: %v", names)
 	}
 }
 

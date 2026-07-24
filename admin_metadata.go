@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-var version = "v2.1.0"
+var version = "v2.1.1"
 
 type updateStatus struct {
 	CurrentVersion  string    `json:"currentVersion"`
