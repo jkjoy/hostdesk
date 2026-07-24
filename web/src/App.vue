@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, type Component } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch, type Component } from "vue";
+import { RouterView, useRoute, useRouter } from "vue-router";
 import {
   Activity,
   ArrowDownToLine,
@@ -42,17 +43,7 @@ import {
 import { api, ApiError, setCSRF } from "./api";
 import type { Overview, ServiceStatus, Session, UpdateStatus } from "./types";
 import { uiKey } from "./ui";
-import FilesView from "./views/FilesView.vue";
-import SitesView from "./views/SitesView.vue";
-import CertificatesView from "./views/CertificatesView.vue";
-import NginxView from "./views/NginxView.vue";
-import PHPView from "./views/PHPView.vue";
-import DatabasesView from "./views/DatabasesView.vue";
-import FTPView from "./views/FTPView.vue";
-import ContainersView from "./views/ContainersView.vue";
-import TerminalView from "./views/TerminalView.vue";
-import AccountView from "./views/AccountView.vue";
-import ServerSettingsView from "./views/ServerSettingsView.vue";
+import type { ViewID } from "./router";
 
 type Screen = "boot" | "login" | "setup" | "app";
 type ToastKind = "success" | "error";
@@ -62,6 +53,7 @@ const session = ref<Session | null>(null);
 const overview = ref<Overview | null>(null);
 const update = ref<UpdateStatus | null>(null);
 const loadingOverview = ref(false);
+const updating = ref(false);
 const activeAction = ref("");
 const mobileNavOpen = ref(false);
 const authBusy = ref(false);
@@ -70,8 +62,10 @@ const login = reactive({ username: "admin", password: "" });
 const setup = reactive({ username: "admin", password: "", confirm: "" });
 const toasts = ref<Array<{ id: number; kind: ToastKind; message: string }>>([]);
 const confirmation = reactive({ open: false, title: "", message: "", confirmText: "确认", danger: false, resolve: null as null | ((value: boolean) => void) });
-const currentView = ref("overview");
-const fileInitialPath = ref("");
+const route = useRoute();
+const router = useRouter();
+const currentView = computed<ViewID>(() => typeof route.meta.view === "string" ? route.meta.view as ViewID : "overview");
+const fileInitialPath = computed(() => typeof route.query.path === "string" ? route.query.path : "");
 let toastID = 0;
 let refreshTimer: number | undefined;
 
@@ -109,8 +103,6 @@ const serviceNames: Record<string, string> = { nginx: "Nginx", php: "PHP-FPM", m
 const serviceIcons: Record<string, Component> = { nginx: Network, php: FileCode2, mysql: Database, ftp: FolderSync };
 const system = computed(() => overview.value?.system);
 const viewLabels = computed(() => Object.fromEntries(navGroups.flatMap(group => group.items.map(item => [item.id, item.label]))));
-const viewComponents: Record<string, Component> = { files: FilesView, sites: SitesView, certificates: CertificatesView, nginx: NginxView, php: PHPView, databases: DatabasesView, ftp: FTPView, containers: ContainersView, terminal: TerminalView, account: AccountView, "server-settings": ServerSettingsView };
-
 function notify(message: string, kind: ToastKind = "success") {
   const id = ++toastID;
   toasts.value.push({ id, kind, message });
@@ -128,16 +120,20 @@ function ask(title: string, message: string, confirmText = "确认", danger = fa
 provide(uiKey, { notify, confirm: ask });
 
 function selectView(id: string) {
-  currentView.value = id;
+  void router.push({ name: id });
   mobileNavOpen.value = false;
-  if (id === "overview") void loadOverview();
 }
 
 function openSiteFiles(absolutePath: string) {
   const root = session.value?.fileRoot === "/" ? "/" : session.value?.fileRoot.replace(/\/+$/, "") || "/";
   const normalized = absolutePath.replace(/\/+/g, "/").replace(/\/$/, "") || "/";
-  fileInitialPath.value = root === "/" ? normalized.replace(/^\//, "") : normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : "";
-  currentView.value = "files";
+  const initialPath = root === "/" ? normalized.replace(/^\//, "") : normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : "";
+  void router.push({ name: "files", query: initialPath ? { path: initialPath } : {} });
+}
+
+function filePathChanged(path: string) {
+  const query = path ? { path } : {};
+  if (fileInitialPath.value !== path) void router.replace({ name: "files", query });
 }
 
 function accountChanged(username: string) {
@@ -191,8 +187,7 @@ function enterApp(value: Session) {
   login.username = value.user;
   login.password = "";
   screen.value = "app";
-  currentView.value = "overview";
-  void loadOverview();
+  if (currentView.value === "overview") void loadOverview();
 }
 
 async function boot() {
@@ -279,6 +274,22 @@ async function loadOverview(forceUpdate = false) {
   }
 }
 
+async function installUpdate() {
+  if (!update.value?.updateAvailable || !update.value.latestVersion) return;
+  const targetVersion = update.value.latestVersion;
+  const approved = await ask(`更新到 ${targetVersion}`, "HostDesk 将下载并校验新版本，更新完成后自动重启服务。", "立即更新");
+  if (!approved) return;
+  updating.value = true;
+  try {
+    await api<{ version: string; restarting: boolean }>("/api/admin/update", { method: "POST" });
+    notify(`${targetVersion} 已安装，服务正在重启`);
+    window.setTimeout(() => window.location.reload(), 4500);
+  } catch (error) {
+    updating.value = false;
+    handleAPIError(error);
+  }
+}
+
 async function runServiceAction(service: ServiceStatus, action: "install" | "start" | "restart" | "remove") {
   if (action === "remove") {
     const approved = await ask(`卸载 ${serviceLabel(service)}`, "程序包将被移除，网站、数据库及用户数据目录会保留。", "确认卸载", true);
@@ -306,6 +317,11 @@ onMounted(() => {
   refreshTimer = window.setInterval(() => {
     if (screen.value === "app" && document.visibilityState === "visible") void loadOverview();
   }, 30000);
+});
+
+watch(currentView, (view) => {
+  mobileNavOpen.value = false;
+  if (view === "overview" && screen.value === "app") void loadOverview();
 });
 
 onBeforeUnmount(() => {
@@ -392,7 +408,9 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="page-content">
-        <component :is="viewComponents[currentView]" v-if="currentView !== 'overview'" :key="currentView === 'files' ? `${currentView}:${fileInitialPath}` : currentView" :initial-path="fileInitialPath" @open-files="openSiteFiles" @account-changed="accountChanged" />
+        <RouterView v-if="currentView !== 'overview'" v-slot="{ Component, route: activeRoute }">
+          <component :is="Component" :key="activeRoute.name" :initial-path="fileInitialPath" @path-changed="filePathChanged" @open-files="openSiteFiles" @account-changed="accountChanged" />
+        </RouterView>
         <template v-else>
         <header class="page-heading">
           <div><span class="page-kicker">SERVER OVERVIEW</span><h1>服务器概览</h1></div>
@@ -447,8 +465,9 @@ onBeforeUnmount(() => {
               <span>{{ update.error || `当前 ${update.currentVersion === 'dev' ? '开发构建' : update.currentVersion}${update.latestVersion ? ` · 最新 ${update.latestVersion}` : ''}` }}</span>
             </div>
             <div class="update-actions">
-              <button class="button quiet" type="button" :disabled="loadingOverview" @click="loadOverview(true)"><RefreshCw :size="16" />检查更新</button>
-              <a v-if="update.releaseUrl" class="button" :class="{ primary: update.updateAvailable }" :href="update.releaseUrl" target="_blank" rel="noopener"><ExternalLink :size="16" />查看版本</a>
+              <button class="button quiet" type="button" :disabled="loadingOverview || updating" @click="loadOverview(true)"><RefreshCw :size="16" />检查更新</button>
+              <a v-if="update.releaseUrl" class="button" :href="update.releaseUrl" target="_blank" rel="noopener"><ExternalLink :size="16" />查看版本</a>
+              <button v-if="update.updateAvailable" class="button primary" type="button" :disabled="updating" @click="installUpdate"><RefreshCw v-if="updating" class="spin" :size="16" /><Download v-else :size="16" />{{ updating ? '正在更新' : '立即更新' }}</button>
             </div>
           </section>
 

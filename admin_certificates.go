@@ -70,8 +70,6 @@ type certificateView struct {
 	Email       string    `json:"email"`
 	Challenge   string    `json:"challenge"`
 	Provider    string    `json:"provider,omitempty"`
-	Certificate string    `json:"certificate"`
-	PrivateKey  string    `json:"privateKey"`
 	IssuedAt    time.Time `json:"issuedAt"`
 	ExpiresAt   time.Time `json:"expiresAt"`
 	LastAttempt time.Time `json:"lastAttempt,omitempty"`
@@ -156,8 +154,7 @@ func (a *app) saveCertificates(records []certificateRecord) error {
 func certificateToView(record certificateRecord) certificateView {
 	return certificateView{
 		ID: record.ID, SiteID: record.SiteID, Domains: record.Domains, Email: record.Email,
-		Challenge: record.Challenge, Provider: record.Provider, Certificate: record.Certificate,
-		PrivateKey: record.PrivateKey, IssuedAt: record.IssuedAt, ExpiresAt: record.ExpiresAt,
+		Challenge: record.Challenge, Provider: record.Provider, IssuedAt: record.IssuedAt, ExpiresAt: record.ExpiresAt,
 		LastAttempt: record.LastAttempt, LastError: record.LastError, AutoRenew: record.AutoRenew,
 		RenewalDue: record.ExpiresAt.Before(time.Now().Add(renewBefore)),
 	}

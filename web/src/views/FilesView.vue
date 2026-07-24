@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { Archive, ChevronRight, Copy, Download, Ellipsis, File, FileCode, FilePlus, Folder, FolderClock, FolderOpen, FolderPlus, Move, Pencil, RefreshCw, Save, Trash2, Upload } from "@lucide/vue";
 import { api } from "../api";
 import { errorMessage, formatBytes, displayDate, useUI } from "../ui";
@@ -9,6 +9,7 @@ import PageHeader from "../components/PageHeader.vue";
 
 interface Entry { name: string; path: string; type: "directory" | "file" | "link"; size: number; modified: string; mode: string }
 const props = defineProps<{ initialPath?: string }>();
+const emit = defineEmits<{ pathChanged: [path: string] }>();
 const { notify, confirm } = useUI();
 const path = ref(props.initialPath || "");
 const entries = ref<Entry[]>([]);
@@ -28,7 +29,7 @@ function toggle(entry: Entry) { const next = new Set(selected.value); next.has(e
 
 async function load(next = path.value) {
   loading.value = true;
-  try { const data = await api<{ path: string; entries: Entry[] }>(`/api/files?path=${encodeURIComponent(next)}`); path.value = data.path; entries.value = data.entries; selected.value = new Set(); if (data.path) { recent.value = [data.path, ...recent.value.filter(item => item !== data.path)].slice(0, 6); localStorage.setItem("hostdesk_recent", JSON.stringify(recent.value)); } }
+  try { const data = await api<{ path: string; entries: Entry[] }>(`/api/files?path=${encodeURIComponent(next)}`); path.value = data.path; emit("pathChanged", data.path); entries.value = data.entries; selected.value = new Set(); if (data.path) { recent.value = [data.path, ...recent.value.filter(item => item !== data.path)].slice(0, 6); localStorage.setItem("hostdesk_recent", JSON.stringify(recent.value)); } }
   catch (error) { notify(errorMessage(error), "error"); }
   finally { loading.value = false; }
 }
@@ -53,6 +54,7 @@ async function uploadFiles(files: FileList | null) { if (!files) return; for (co
 function isArchive(entry: Entry) { return /\.(zip|tar|tar\.gz|tgz)$/i.test(entry.name); }
 function toggleAll() { selected.value = selected.value.size === entries.value.length ? new Set() : new Set(entries.value.map(item => item.path)); }
 onMounted(() => { try { recent.value = JSON.parse(localStorage.getItem("hostdesk_recent") || "[]"); } catch { recent.value = []; } void load(); });
+watch(() => props.initialPath, (next) => { if ((next || "") !== path.value) void load(next || ""); });
 </script>
 
 <template>

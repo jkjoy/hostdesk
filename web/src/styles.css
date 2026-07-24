@@ -207,7 +207,7 @@ a { color: inherit; text-decoration: none; }
 .field input, .field select, .field textarea { width: 100%; min-height: 39px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: #fff; color: var(--ink); }
 .field textarea { resize: vertical; line-height: 1.55; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); outline: 3px solid rgba(22,122,87,.1); }
-.field.full, .check-field.full { grid-column: 1 / -1; }
+.field.full, .check-field.full, .option-field.full { grid-column: 1 / -1; }
 .check-field { min-height: 39px; padding: 8px 10px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 5px; color: #48534e; font-size: 11px; font-weight: 700; }
 .check-field input, .option-field input { accent-color: var(--accent); }
 .field-note { margin: 0; color: var(--muted); font-size: 11px; }

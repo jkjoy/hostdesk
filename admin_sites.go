@@ -259,7 +259,7 @@ func (a *app) handleNginxSettingsPut(w http.ResponseWriter, r *http.Request) {
 
 func normalizeDomain(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
 
-func validateSite(site *siteDefinition) error {
+func validateSiteBase(site *siteDefinition) error {
 	site.Domain = normalizeDomain(site.Domain)
 	if !domainPattern.MatchString(site.Domain) {
 		return &apiError{http.StatusBadRequest, "主域名格式无效"}
@@ -318,9 +318,13 @@ func validateSite(site *siteDefinition) error {
 			return &apiError{http.StatusBadRequest, "伪静态模式无效"}
 		}
 	}
+	return nil
+}
+
+func validateSiteCertificatePaths(site *siteDefinition) error {
 	if site.SSL {
 		if site.Certificate == "" || site.PrivateKey == "" {
-			return &apiError{http.StatusBadRequest, "启用 HTTPS 时必须设置证书和私钥路径"}
+			return &apiError{http.StatusBadRequest, "启用 HTTPS 时必须选择或填写证书"}
 		}
 		for _, filename := range []string{site.Certificate, site.PrivateKey} {
 			if !filepath.IsAbs(filename) {
@@ -332,6 +336,13 @@ func validateSite(site *siteDefinition) error {
 		}
 	}
 	return nil
+}
+
+func validateSite(site *siteDefinition) error {
+	if err := validateSiteBase(site); err != nil {
+		return err
+	}
+	return validateSiteCertificatePaths(site)
 }
 
 func validateRewriteRules(rules string) error {
@@ -590,7 +601,16 @@ func (a *app) handleSitesList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sites": sites, "nginxInstalled": packageInstalled("nginx")})
+	records, err := a.loadCertificates()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	views := make([]siteView, 0, len(sites))
+	for _, site := range sites {
+		views = append(views, siteToView(site, records))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sites": views, "certificates": siteCertificateOptions(records), "nginxInstalled": packageInstalled("nginx")})
 }
 
 func (a *app) handleSiteCreate(w http.ResponseWriter, r *http.Request) {
@@ -601,12 +621,13 @@ func (a *app) handleSiteCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &apiError{http.StatusConflict, "请先安装 Nginx"})
 		return
 	}
-	var site siteDefinition
-	if err := decodeJSON(w, r, &site); err != nil {
+	var request siteRequest
+	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := validateSite(&site); err != nil {
+	site := request.siteDefinition()
+	if err := validateSiteBase(&site); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -627,6 +648,20 @@ func (a *app) handleSiteCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	records, err := a.loadCertificates()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	certificateSnapshots, err := a.resolveSiteCertificate(&site, request, nil, records)
+	if err == nil {
+		err = validateSiteCertificatePaths(&site)
+	}
+	if err != nil {
+		restoreCertificateSnapshots(certificateSnapshots, err)
+		writeError(w, err)
+		return
+	}
 	previousSites := append([]siteDefinition(nil), sites...)
 	sites = append(sites, site)
 	err = a.saveSites(sites)
@@ -637,22 +672,19 @@ func (a *app) handleSiteCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		restoreCertificateSnapshots(certificateSnapshots, err)
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, site)
+	writeJSON(w, http.StatusCreated, siteToView(site, records))
 }
 
 func (a *app) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 	if a.authorize(w, r, true) == nil {
 		return
 	}
-	var site siteDefinition
-	if err := decodeJSON(w, r, &site); err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := validateSite(&site); err != nil {
+	var request siteRequest
+	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -675,9 +707,29 @@ func (a *app) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := sites[index]
+	site := request.siteDefinition()
 	site.ID = previous.ID
 	site.Domain = previous.Domain
 	site.CreatedAt = previous.CreatedAt
+	site.Enabled = previous.Enabled
+	if err := validateSiteBase(&site); err != nil {
+		writeError(w, err)
+		return
+	}
+	records, err := a.loadCertificates()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	certificateSnapshots, err := a.resolveSiteCertificate(&site, request, &previous, records)
+	if err == nil {
+		err = validateSiteCertificatePaths(&site)
+	}
+	if err != nil {
+		restoreCertificateSnapshots(certificateSnapshots, err)
+		writeError(w, err)
+		return
+	}
 	previousSites := append([]siteDefinition(nil), sites...)
 	sites[index] = site
 	err = a.saveSites(sites)
@@ -688,10 +740,11 @@ func (a *app) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		restoreCertificateSnapshots(certificateSnapshots, err)
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, site)
+	writeJSON(w, http.StatusOK, siteToView(site, records))
 }
 
 func (a *app) handleSiteDelete(w http.ResponseWriter, r *http.Request) {

@@ -4,7 +4,16 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newAuthTestApp(t *testing.T, dataDir string) *app {
@@ -138,6 +148,29 @@ func TestClientIPOnlyTrustsLoopbackProxy(t *testing.T) {
 	request.Header.Set("X-Real-IP", "203.0.113.9")
 	if ip := requestClientIP(request); ip != "198.51.100.7" {
 		t.Fatalf("untrusted forwarded IP was used: %s", ip)
+	}
+}
+
+func TestSPAHandlerServesFrontendRoutesOnly(t *testing.T) {
+	handler := spaHandler([]byte("<main>HostDesk</main>"), http.NotFoundHandler())
+	for _, requestPath := range []string{"/", "/sites", "/certificates", "/server-settings", "/files?path=var/www"} {
+		request := httptest.NewRequest(http.MethodGet, requestPath, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Body.String() != "<main>HostDesk</main>" {
+			t.Fatalf("frontend route %s was not served by the SPA: status=%d body=%q", requestPath, response.Code, response.Body.String())
+		}
+		if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+			t.Fatalf("frontend route %s returned content type %q", requestPath, contentType)
+		}
+	}
+	for _, requestPath := range []string{"/api/missing", "/ws/missing", "/app/assets/missing.js", "/vendor/missing.js", "/missing.css"} {
+		request := httptest.NewRequest(http.MethodGet, requestPath, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("non-SPA path %s returned status %d", requestPath, response.Code)
+		}
 	}
 }
 
@@ -431,6 +464,65 @@ func TestCertificateDomainValidation(t *testing.T) {
 	}
 }
 
+func testCertificatePEM(t *testing.T, domains []string, notBefore, notAfter time.Time) ([]byte, []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: domains[0]}, DNSNames: domains,
+		NotBefore: notBefore, NotAfter: notAfter, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+}
+
+func TestCustomCertificateValidation(t *testing.T) {
+	now := time.Now()
+	certificatePEM, privateKeyPEM := testCertificatePEM(t, []string{"example.com", "www.example.com"}, now.Add(-time.Hour), now.Add(time.Hour))
+	if err := validateCertificatePEM(certificatePEM, privateKeyPEM, []string{"example.com", "www.example.com"}); err != nil {
+		t.Fatalf("valid certificate rejected: %v", err)
+	}
+	if err := validateCertificatePEM(certificatePEM, privateKeyPEM, []string{"api.example.com"}); err == nil {
+		t.Fatal("certificate for another domain was accepted")
+	}
+	_, otherKey := testCertificatePEM(t, []string{"example.com"}, now.Add(-time.Hour), now.Add(time.Hour))
+	if err := validateCertificatePEM(certificatePEM, otherKey, []string{"example.com"}); err == nil {
+		t.Fatal("mismatched certificate and private key were accepted")
+	}
+	expiredCertificate, expiredKey := testCertificatePEM(t, []string{"example.com"}, now.Add(-2*time.Hour), now.Add(-time.Hour))
+	if err := validateCertificatePEM(expiredCertificate, expiredKey, []string{"example.com"}); err == nil {
+		t.Fatal("expired certificate was accepted")
+	}
+}
+
+func TestSiteViewDoesNotExposeCertificatePaths(t *testing.T) {
+	site := siteDefinition{
+		ID: "example-com", Domain: "example.com", Aliases: []string{}, Type: "static", Root: "/var/www/example.com/public",
+		SSL: true, Certificate: "/secret/fullchain.pem", PrivateKey: "/secret/privkey.pem",
+	}
+	encoded, err := json.Marshal(siteToView(site, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	if strings.Contains(text, "/secret/") || strings.Contains(text, "privateKey") || strings.Contains(text, `"certificate"`) {
+		t.Fatalf("site view exposed certificate paths: %s", text)
+	}
+	if !strings.Contains(text, `"certificateMode":"custom"`) || !strings.Contains(text, `"certificateConfigured":true`) {
+		t.Fatalf("site view omitted certificate state: %s", text)
+	}
+}
+
 func TestCredentialEncryption(t *testing.T) {
 	a := &app{dataDir: t.TempDir()}
 	encrypted, err := a.encryptCredential("cloudflare-secret-token")
@@ -497,6 +589,32 @@ func TestVersionComparison(t *testing.T) {
 		if got := versionLess(test.current, test.latest); got != test.want {
 			t.Fatalf("versionLess(%q, %q)=%v, want %v", test.current, test.latest, got, test.want)
 		}
+	}
+}
+
+func TestUpdateAssetVerification(t *testing.T) {
+	for architecture, want := range map[string]string{
+		"386": "hostdesk-linux-386", "amd64": "hostdesk-linux-amd64", "arm64": "hostdesk-linux-arm64", "arm": "hostdesk-linux-armv7",
+	} {
+		asset, err := updateAssetName(architecture)
+		if err != nil || asset != want {
+			t.Fatalf("unexpected asset for %s: %q, %v", architecture, asset, err)
+		}
+	}
+	if _, err := updateAssetName("mips64"); err == nil {
+		t.Fatal("unsupported architecture was accepted")
+	}
+	binary := []byte("verified release binary")
+	digest := sha256.Sum256(binary)
+	checksums := []byte(hex.EncodeToString(digest[:]) + "  hostdesk-linux-amd64\n")
+	if err := verifyUpdateAsset(binary, checksums, "hostdesk-linux-amd64"); err != nil {
+		t.Fatalf("valid release checksum rejected: %v", err)
+	}
+	if err := verifyUpdateAsset([]byte("tampered"), checksums, "hostdesk-linux-amd64"); err == nil {
+		t.Fatal("tampered release binary was accepted")
+	}
+	if err := verifyUpdateAsset(binary, checksums, "hostdesk-linux-arm64"); err == nil {
+		t.Fatal("missing architecture checksum was accepted")
 	}
 }
 

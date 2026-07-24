@@ -66,6 +66,7 @@ type app struct {
 	adminMu         sync.Mutex
 	publicIPMu      sync.Mutex
 	updateMu        sync.Mutex
+	updateInstallMu sync.Mutex
 	sessions        map[string]*sessionInfo
 	publicIP        string
 	publicIPExpires time.Time
@@ -122,6 +123,7 @@ func main() {
 	mux.HandleFunc("POST /api/extract", a.handleExtract)
 	mux.HandleFunc("GET /api/admin/overview", a.handleAdminOverview)
 	mux.HandleFunc("GET /api/admin/update", a.handleUpdateCheck)
+	mux.HandleFunc("POST /api/admin/update", a.handleUpdateInstall)
 	mux.HandleFunc("GET /api/admin/server-settings", a.handleServerSettingsGet)
 	mux.HandleFunc("PUT /api/admin/server-settings", a.handleServerSettingsPut)
 	mux.HandleFunc("POST /api/admin/server-settings/swap", a.handleSwapCreate)
@@ -167,16 +169,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(appIndex)
-	})
-
 	static, err := fs.Sub(embeddedFiles, "public")
 	if err != nil {
 		log.Fatal(err)
 	}
-	mux.Handle("/", http.FileServer(http.FS(static)))
+	mux.Handle("/", spaHandler(appIndex, http.FileServer(http.FS(static))))
 
 	host := envString("HOST", "127.0.0.1")
 	port := envInt("PORT", 8787)
@@ -191,6 +188,20 @@ func main() {
 	log.Printf("文件管理根目录：%s", a.rootReal)
 	go a.certificateRenewalLoop()
 	log.Fatal(server.ListenAndServe())
+}
+
+func spaHandler(appIndex []byte, static http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath := path.Clean("/" + strings.TrimPrefix(r.URL.Path, "/"))
+		staticPath := requestPath == "/app" || requestPath == "/vendor" || strings.HasPrefix(requestPath, "/app/") || strings.HasPrefix(requestPath, "/vendor/")
+		reservedPath := requestPath == "/api" || requestPath == "/ws" || strings.HasPrefix(requestPath, "/api/") || strings.HasPrefix(requestPath, "/ws/")
+		if r.Method == http.MethodGet && !staticPath && !reservedPath && path.Ext(requestPath) == "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(appIndex)
+			return
+		}
+		static.ServeHTTP(w, r)
+	})
 }
 
 func newApp() (*app, error) {
