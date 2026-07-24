@@ -3,6 +3,7 @@ module hostdesk
 go 1.26.3
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gorilla/websocket v1.5.3

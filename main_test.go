@@ -15,14 +15,18 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func newAuthTestApp(t *testing.T, dataDir string) *app {
@@ -189,6 +193,59 @@ func TestTerminalSize(t *testing.T) {
 		if rows != test.wantRows || cols != test.wantCols {
 			t.Fatalf("terminalSize(%d, %d) = (%d, %d), want (%d, %d)", test.rows, test.cols, rows, cols, test.wantRows, test.wantCols)
 		}
+	}
+}
+
+func TestLocalTerminalWebSocket(t *testing.T) {
+	a := &app{sessions: map[string]*sessionInfo{
+		"terminal-test": {CSRF: "terminal-csrf", Expires: time.Now().Add(time.Minute), User: "admin"},
+	}}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback sockets unavailable: %v", err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(a.handleTerminal))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+
+	header := http.Header{}
+	header.Set("Origin", server.URL)
+	header.Set("Cookie", (&http.Cookie{Name: "hostdesk_session", Value: "terminal-test"}).String())
+	connection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := connection.WriteJSON(terminalMessage{Type: "connect", CSRF: "terminal-csrf", Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	commandSent := false
+	var output strings.Builder
+	for !strings.Contains(output.String(), "HOSTDESK_PTY_OK") {
+		var message terminalMessage
+		if err := connection.ReadJSON(&message); err != nil {
+			t.Fatalf("read terminal message: %v; output=%q", err, output.String())
+		}
+		switch message.Type {
+		case "ready":
+			if !commandSent {
+				commandSent = true
+				if err := connection.WriteJSON(terminalMessage{Type: "input", Data: "printf 'HOSTDESK_PTY_OK\\n'\r"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case "data":
+			output.WriteString(message.Data)
+		case "error":
+			t.Fatalf("terminal returned an error: %q", message.Data)
+		}
+	}
+	if !commandSent {
+		t.Fatal("terminal never became ready")
 	}
 }
 
@@ -424,6 +481,83 @@ func TestRenderPHPRewritePresets(t *testing.T) {
 	if config := renderSiteConfig(site, defaultNginxSettings()); !strings.Contains(config, "        rewrite ^/old$ /new permanent;") {
 		t.Fatal("custom rewrite was not rendered inside the location block")
 	}
+	if config := renderSiteConfig(base, defaultNginxSettings()); !strings.Contains(config, "error_page 404 /404.html;") || !strings.Contains(config, "location = /404.html { internal; }") {
+		t.Fatal("PHP site config does not use the managed 404 page")
+	}
+}
+
+func TestRenderSiteConfigUsesCustomOverride(t *testing.T) {
+	site := siteDefinition{
+		ID:          "example-com",
+		Domain:      "example.com",
+		Type:        "static",
+		Root:        "/var/www/example.com/public",
+		NginxConfig: "# custom\nserver { listen 8080; }\n",
+	}
+	if config := renderSiteConfig(site, defaultNginxSettings()); config != site.NginxConfig {
+		t.Fatalf("renderSiteConfig() = %q, want custom override %q", config, site.NginxConfig)
+	}
+}
+
+func TestNormalizeSiteNginxConfig(t *testing.T) {
+	config, err := normalizeSiteNginxConfig("server { listen 80; }")
+	if err != nil {
+		t.Fatalf("normalizeSiteNginxConfig() error = %v", err)
+	}
+	if config != "server { listen 80; }\n" {
+		t.Fatalf("normalizeSiteNginxConfig() = %q", config)
+	}
+	for _, value := range []string{" \n\t", "server {\x00}"} {
+		if _, err := normalizeSiteNginxConfig(value); err == nil {
+			t.Fatalf("normalizeSiteNginxConfig(%q) unexpectedly succeeded", value)
+		}
+	}
+	if _, err := normalizeSiteNginxConfig(strings.Repeat("a", maxSiteNginxConfigBytes+1)); err == nil {
+		t.Fatal("oversized Nginx config unexpectedly succeeded")
+	}
+}
+
+func TestDefaultSiteFiles(t *testing.T) {
+	staticRoot := t.TempDir()
+	staticSite := siteDefinition{Domain: "static.example.com", Type: "static", Root: staticRoot}
+	if err := ensureDefaultSiteFiles(staticSite); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := filepath.Join(staticRoot, "index.html")
+	index, err := os.ReadFile(indexPath)
+	if err != nil || !strings.Contains(string(index), "static.example.com") || !strings.Contains(string(index), "网站运行正常") {
+		t.Fatalf("invalid static index: %v, %s", err, index)
+	}
+	notFound, err := os.ReadFile(filepath.Join(staticRoot, "404.html"))
+	if err != nil || !strings.Contains(string(notFound), "404") || !strings.Contains(string(notFound), "static.example.com") {
+		t.Fatalf("invalid 404 page: %v, %s", err, notFound)
+	}
+	if err := os.WriteFile(indexPath, []byte("custom index"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDefaultSiteFiles(staticSite); err != nil {
+		t.Fatal(err)
+	}
+	index, _ = os.ReadFile(indexPath)
+	if string(index) != "custom index" {
+		t.Fatal("existing site index was overwritten")
+	}
+
+	phpRoot := t.TempDir()
+	phpSite := siteDefinition{Domain: "php.example.com", Type: "php", Root: phpRoot}
+	if err := ensureDefaultSiteFiles(phpSite); err != nil {
+		t.Fatal(err)
+	}
+	probePath := filepath.Join(phpRoot, "index.php")
+	probe, err := os.ReadFile(probePath)
+	if err != nil || !strings.Contains(string(probe), "PHP_VERSION") || !strings.Contains(string(probe), "upload_max_filesize") || strings.Contains(string(probe), "phpinfo(") {
+		t.Fatalf("invalid PHP probe: %v", err)
+	}
+	if php, err := exec.LookPath("php"); err == nil {
+		if output, err := exec.Command(php, "-l", probePath).CombinedOutput(); err != nil {
+			t.Fatalf("PHP probe syntax error: %v\n%s", err, output)
+		}
+	}
 }
 
 func TestProtectedDatabaseUsers(t *testing.T) {
@@ -526,14 +660,14 @@ func TestCustomCertificateValidation(t *testing.T) {
 func TestSiteViewDoesNotExposeCertificatePaths(t *testing.T) {
 	site := siteDefinition{
 		ID: "example-com", Domain: "example.com", Aliases: []string{}, Type: "static", Root: "/var/www/example.com/public",
-		SSL: true, Certificate: "/secret/fullchain.pem", PrivateKey: "/secret/privkey.pem",
+		SSL: true, Certificate: "/secret/fullchain.pem", PrivateKey: "/secret/privkey.pem", NginxConfig: "# secret custom config",
 	}
 	encoded, err := json.Marshal(siteToView(site, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(encoded)
-	if strings.Contains(text, "/secret/") || strings.Contains(text, "privateKey") || strings.Contains(text, `"certificate"`) {
+	if strings.Contains(text, "/secret/") || strings.Contains(text, "privateKey") || strings.Contains(text, `"certificate"`) || strings.Contains(text, "secret custom config") || strings.Contains(text, "nginxConfig") {
 		t.Fatalf("site view exposed certificate paths: %s", text)
 	}
 	if !strings.Contains(text, `"certificateMode":"custom"`) || !strings.Contains(text, `"certificateConfigured":true`) {

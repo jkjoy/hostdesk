@@ -1,26 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
-import { CornerDownLeft, Eraser, KeyRound, Plug, Trash2, Unplug } from "@lucide/vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { CornerDownLeft, Eraser, Plug, RotateCw, Unplug } from "@lucide/vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { api } from "../api";
-import { errorMessage, useUI } from "../ui";
+import { getCSRFToken } from "../api";
 import PageHeader from "../components/PageHeader.vue";
 
-interface SSHSettings { host: string; port: number; username: string; passwordConfigured: boolean }
-
-const { notify, confirm } = useUI();
 const container = ref<HTMLElement>();
-const keyInput = ref<HTMLInputElement>();
-const commandInput = ref<HTMLInputElement>();
 const connected = ref(false);
 const status = ref("未连接");
-const form = reactive({ host: "127.0.0.1", port: 22, username: "", password: "", privateKey: "" });
 const command = ref("");
-const remember = ref(true);
-const settings = ref<SSHSettings | null>(null);
-const canUseSavedCredential = computed(() => !!settings.value?.passwordConfigured && !form.password && !form.privateKey && settings.value.host === form.host.trim() && settings.value.port === form.port && settings.value.username === form.username.trim());
 let terminal: Terminal | null = null;
 let fit: FitAddon | null = null;
 let socket: WebSocket | null = null;
@@ -28,31 +18,23 @@ let observer: ResizeObserver | null = null;
 let resizeFrame = 0;
 
 function sendSize() {
-  const connection = socket;
-  const currentTerminal = terminal;
-  if (connection?.readyState === WebSocket.OPEN && currentTerminal && currentTerminal.cols > 0 && currentTerminal.rows > 0) {
-    connection.send(JSON.stringify({ type: "resize", cols: currentTerminal.cols, rows: currentTerminal.rows }));
+  if (socket?.readyState === WebSocket.OPEN && terminal && terminal.cols > 0 && terminal.rows > 0) {
+    socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
   }
 }
 
 function resize(focus = false) {
-  const currentFit = fit;
-  const currentTerminal = terminal;
-  if (!container.value || !currentFit || !currentTerminal) return;
+  if (!container.value || !fit || !terminal) return;
   window.cancelAnimationFrame(resizeFrame);
   resizeFrame = window.requestAnimationFrame(() => {
     try {
-      currentFit.fit();
+      fit?.fit();
       sendSize();
-      if (focus) currentTerminal.focus();
+      if (focus) terminal?.focus();
     } catch {
       // The terminal may be unmounting while a resize frame is pending.
     }
   });
-}
-
-function focusTerminal() {
-  terminal?.focus();
 }
 
 function init() {
@@ -70,7 +52,7 @@ function init() {
   fit = addon;
   instance.loadAddon(addon);
   instance.open(container.value);
-  instance.writeln("\x1b[38;5;72mHostDesk WebSSH\x1b[0m\r\n\x1b[38;5;245m等待连接...\x1b[0m");
+  instance.writeln("\x1b[38;5;72mHostDesk 本机终端\x1b[0m\r\n\x1b[38;5;245m正在连接...\x1b[0m");
   instance.onData((data: string) => {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
   });
@@ -83,45 +65,35 @@ function init() {
 
 function connect() {
   init();
-  const currentTerminal = terminal;
-  const currentFit = fit;
-  if (!currentTerminal || !currentFit) return;
-  try { currentFit.fit(); } catch { /* A resize frame will retry after layout. */ }
+  if (!terminal || !fit) return;
+  try { fit.fit(); } catch { /* A resize frame will retry after layout. */ }
   socket?.close();
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const connection = new WebSocket(`${protocol}://${location.host}/ws/ssh`);
+  const connection = new WebSocket(`${protocol}://${location.host}/ws/terminal`);
   socket = connection;
   connected.value = false;
   status.value = "连接中";
-  currentTerminal.reset();
-  currentTerminal.writeln("\x1b[38;5;245m正在建立 SSH 连接...\x1b[0m");
+  terminal.reset();
+  terminal.writeln("\x1b[38;5;245m正在启动本机终端...\x1b[0m");
 
   connection.onopen = () => connection.send(JSON.stringify({
     type: "connect",
-    ...form,
-    cols: currentTerminal.cols,
-    rows: currentTerminal.rows,
-    useSavedCredential: canUseSavedCredential.value,
+    csrf: getCSRFToken(),
+    cols: terminal?.cols || 100,
+    rows: terminal?.rows || 30,
   }));
   connection.onmessage = ({ data }) => {
     if (connection !== socket) return;
     let message: { type: string; data?: string; message?: string };
     try { message = JSON.parse(data); } catch { return; }
-    if (message.type === "data" && message.data) {
-      currentTerminal.write(message.data);
-    }
+    if (message.type === "data" && message.data) terminal?.write(message.data);
     if (message.type === "ready") {
       connected.value = true;
-      status.value = "已连接";
-      currentTerminal.writeln("\r\n\x1b[32mSSH 连接成功\x1b[0m");
-      connection.send(JSON.stringify({ type: "input", data: "\r" }));
-      currentTerminal.scrollToBottom();
+      status.value = "已连接本机";
       resize();
-      void persistConnection();
-      void nextTick(() => commandInput.value?.focus());
     }
     if (message.type === "error") {
-      currentTerminal.writeln(`\r\n\x1b[31m${message.message || "SSH 连接失败"}\x1b[0m`);
+      terminal?.writeln(`\r\n\x1b[31m${message.message || "终端连接失败"}\x1b[0m`);
       connected.value = false;
       status.value = "连接失败";
       resize(true);
@@ -130,7 +102,7 @@ function connect() {
   };
   connection.onerror = () => {
     if (connection !== socket) return;
-    currentTerminal.writeln("\r\n\x1b[31mWebSocket 连接失败\x1b[0m");
+    terminal?.writeln("\r\n\x1b[31mWebSocket 连接失败\x1b[0m");
     connected.value = false;
     status.value = "连接失败";
   };
@@ -138,50 +110,8 @@ function connect() {
     if (connection !== socket) return;
     socket = null;
     connected.value = false;
-    if (status.value === "已连接" || status.value === "连接中") status.value = "连接已关闭";
+    if (status.value === "已连接本机" || status.value === "连接中") status.value = "连接已关闭";
   };
-}
-
-function submitCommand() {
-  if (!connected.value || socket?.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({ type: "input", data: `${command.value}\r` }));
-  command.value = "";
-}
-
-async function loadSettings() {
-  try {
-    const saved = await api<SSHSettings>("/api/admin/ssh-settings");
-    settings.value = saved.host ? saved : null;
-    if (saved.host) Object.assign(form, { host: saved.host, port: saved.port || 22, username: saved.username, password: "", privateKey: "" });
-  } catch (error) {
-    notify(errorMessage(error), "error");
-  }
-}
-
-async function persistConnection() {
-  if (!remember.value) return;
-  try {
-    settings.value = await api<SSHSettings>("/api/admin/ssh-settings", {
-      method: "PUT",
-      body: { host: form.host, port: form.port, username: form.username, password: form.password },
-    });
-    form.password = "";
-    notify("SSH 连接已加密保存");
-  } catch (error) {
-    notify(errorMessage(error), "error");
-  }
-}
-
-async function removeSavedConnection() {
-  if (!await confirm("删除已保存连接", "将清除数据库中的 SSH 主机、用户名和加密密码。", "删除", true)) return;
-  try {
-    await api<SSHSettings>("/api/admin/ssh-settings", { method: "DELETE" });
-    settings.value = null;
-    form.password = "";
-    notify("已保存的 SSH 连接已删除");
-  } catch (error) {
-    notify(errorMessage(error), "error");
-  }
 }
 
 function disconnect(close = true) {
@@ -192,21 +122,16 @@ function disconnect(close = true) {
   status.value = "未连接";
 }
 
-function readKey(files: FileList | null) {
-  const file = files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    form.privateKey = String(reader.result || "");
-    notify("SSH 私钥已载入");
-  };
-  reader.readAsText(file);
+function submitCommand() {
+  if (!connected.value || socket?.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ type: "input", data: `${command.value}\r` }));
+  command.value = "";
 }
 
 onMounted(async () => {
   await nextTick();
   init();
-  await loadSettings();
+  connect();
 });
 onBeforeUnmount(() => {
   window.cancelAnimationFrame(resizeFrame);
@@ -217,36 +142,24 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <PageHeader title="终端" subtitle="WebSSH 连接" kicker="TERMINAL">
+  <PageHeader title="终端" subtitle="服务器本机 Shell" kicker="TERMINAL">
     <span class="connection-state"><i :class="{ connected }"></i>{{ status }}</span>
-  </PageHeader>
-  <form class="connection-bar" @submit.prevent="connect">
-    <label class="field"><span>主机</span><input v-model="form.host" required></label>
-    <label class="field port"><span>端口</span><input v-model.number="form.port" type="number" min="1" max="65535" required></label>
-    <label class="field"><span>用户</span><input v-model="form.username" required autocomplete="username"></label>
-    <label class="field"><span>密码</span><input v-model="form.password" type="password" autocomplete="current-password"></label>
-    <button class="button" type="button" @click="keyInput?.click()"><KeyRound :size="16" />私钥</button>
-    <input ref="keyInput" hidden type="file" @change="readKey(($event.target as HTMLInputElement).files)">
-    <button v-if="!connected" class="button primary" type="submit"><Plug :size="16" />连接</button>
+    <button v-if="!connected" class="button primary" type="button" @click="connect"><RotateCw :size="16" />重新连接</button>
     <button v-else class="button" type="button" @click="disconnect()"><Unplug :size="16" />断开</button>
-    <div class="connection-persist">
-      <label><input v-model="remember" type="checkbox">保存用户名和加密密码</label>
-      <span v-if="settings?.passwordConfigured"><KeyRound :size="14" />已保存 {{ settings.username }}@{{ settings.host }}:{{ settings.port }}</span>
-      <button v-if="settings" class="icon-button danger" type="button" title="删除已保存连接" @click="removeSavedConnection"><Trash2 :size="15" /></button>
-    </div>
-  </form>
-  <div class="terminal-shell" :class="{ 'has-command': connected }">
+  </PageHeader>
+  <div class="terminal-shell local-terminal" :class="{ 'has-command': connected }">
     <div class="terminal-head">
       <span>{{ status }}</span>
       <div class="terminal-head-actions">
+        <button v-if="!connected" class="icon-button dark" type="button" title="连接" @click="connect"><Plug :size="16" /></button>
         <button class="icon-button dark" type="button" title="清屏" @click="terminal?.clear()"><Eraser :size="16" /></button>
       </div>
     </div>
     <div class="terminal-stage">
-      <div ref="container" class="terminal" role="application" aria-label="SSH 终端" @pointerdown="focusTerminal"></div>
+      <div ref="container" class="terminal" role="application" aria-label="本机终端" @pointerdown="terminal?.focus()"></div>
     </div>
     <form v-if="connected" class="terminal-command" @submit.prevent="submitCommand">
-      <span>$</span><input ref="commandInput" v-model="command" autocomplete="off" spellcheck="false" aria-label="终端命令"><button class="icon-button dark" type="submit" title="执行命令"><CornerDownLeft :size="17" /></button>
+      <span>#</span><input v-model="command" autocomplete="off" spellcheck="false" aria-label="终端命令"><button class="icon-button dark" type="submit" title="执行命令"><CornerDownLeft :size="17" /></button>
     </form>
   </div>
 </template>

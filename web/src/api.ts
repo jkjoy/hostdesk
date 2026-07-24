@@ -10,6 +10,10 @@ export function setCSRF(value: string) {
   csrfToken = value;
 }
 
+export function getCSRFToken() {
+  return csrfToken;
+}
+
 type ApiOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
 export async function api<T>(url: string, options: ApiOptions = {}): Promise<T> {

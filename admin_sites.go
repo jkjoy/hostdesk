@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	nginxHTTPDir = "/etc/nginx/http.d"
-	webRootDir   = "/var/www"
+	nginxHTTPDir            = "/etc/nginx/http.d"
+	webRootDir              = "/var/www"
+	maxSiteNginxConfigBytes = 256 << 10
 )
 
 var (
@@ -45,6 +46,7 @@ type siteDefinition struct {
 	SSL          bool     `json:"ssl"`
 	Certificate  string   `json:"certificate"`
 	PrivateKey   string   `json:"privateKey"`
+	NginxConfig  string   `json:"nginxConfig,omitempty"`
 	CreatedAt    string   `json:"createdAt"`
 }
 
@@ -70,13 +72,19 @@ func captureFile(filename string) (fileSnapshot, error) {
 	return fileSnapshot{filename: filename, data: data, mode: info.Mode().Perm(), exists: true}, nil
 }
 
+func restoreFile(snapshot fileSnapshot) error {
+	if snapshot.exists {
+		return writeAtomic(snapshot.filename, snapshot.data, snapshot.mode)
+	}
+	if err := os.Remove(snapshot.filename); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func restoreFiles(snapshots ...fileSnapshot) {
 	for _, snapshot := range snapshots {
-		if snapshot.exists {
-			_ = writeAtomic(snapshot.filename, snapshot.data, snapshot.mode)
-		} else {
-			_ = os.Remove(snapshot.filename)
-		}
+		_ = restoreFile(snapshot)
 	}
 }
 
@@ -415,6 +423,8 @@ func renderSiteBody(site siteDefinition) string {
 	case "php":
 		return fmt.Sprintf(`    root %s;
     index index.php index.html;
+    error_page 404 /404.html;
+    location = /404.html { internal; }
     location / {
 %s    }
     location ~ \.php$ {
@@ -427,6 +437,8 @@ func renderSiteBody(site siteDefinition) string {
 	default:
 		return fmt.Sprintf(`    root %s;
     index index.html;
+    error_page 404 /404.html;
+    location = /404.html { internal; }
     location / { try_files $uri $uri/ =404; }
     location ~ /\. { deny all; }
 `, site.Root)
@@ -442,6 +454,9 @@ func renderACMEChallengeLocation() string {
 }
 
 func renderSiteConfig(site siteDefinition, settings nginxSettings) string {
+	if site.NginxConfig != "" {
+		return site.NginxConfig
+	}
 	names := siteNames(site)
 	body := renderSiteBody(site)
 	acmeLocation := renderACMEChallengeLocation()
@@ -511,6 +526,193 @@ func siteConfigPath(site siteDefinition) string {
 	return filepath.Join(nginxHTTPDir, "hostdesk-"+site.ID+suffix)
 }
 
+func activeSiteConfigPath(site siteDefinition) string {
+	site.Enabled = true
+	return siteConfigPath(site)
+}
+
+func normalizeSiteNginxConfig(config string) (string, error) {
+	if len(config) > maxSiteNginxConfigBytes {
+		return "", &apiError{http.StatusRequestEntityTooLarge, "Nginx 配置不能超过 256 KiB"}
+	}
+	if strings.TrimSpace(config) == "" {
+		return "", &apiError{http.StatusBadRequest, "Nginx 配置不能为空"}
+	}
+	if strings.ContainsRune(config, '\x00') {
+		return "", &apiError{http.StatusBadRequest, "Nginx 配置包含无效字符"}
+	}
+	if !strings.HasSuffix(config, "\n") {
+		config += "\n"
+	}
+	return config, nil
+}
+
+func (a *app) applySiteNginxOverride(sites []siteDefinition, index int, config string) error {
+	if err := ensureNginxLayout(); err != nil {
+		return err
+	}
+	sites[index].NginxConfig = config
+	site := sites[index]
+	targetPath := siteConfigPath(site)
+	validationPath := activeSiteConfigPath(site)
+
+	targetSnapshot, err := captureFile(targetPath)
+	if err != nil {
+		return err
+	}
+	sitesSnapshot, err := captureFile(a.sitesPath())
+	if err != nil {
+		return err
+	}
+	snapshots := []fileSnapshot{targetSnapshot, sitesSnapshot}
+	if validationPath != targetPath {
+		validationSnapshot, snapshotErr := captureFile(validationPath)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		snapshots = append(snapshots, validationSnapshot)
+	}
+
+	desired := []byte(renderSiteConfig(site, a.loadNginxSettings()))
+	if err = writeAtomic(validationPath, desired, 0644); err == nil {
+		err = nginxTest()
+	}
+	if validationPath != targetPath {
+		if restoreErr := restoreFile(snapshots[len(snapshots)-1]); err == nil {
+			err = restoreErr
+		}
+		if err == nil {
+			err = writeAtomic(targetPath, desired, 0644)
+		}
+	}
+	if err == nil {
+		err = a.saveSites(sites)
+	}
+	if err == nil && site.Enabled {
+		err = nginxReloadIfRunning()
+	}
+	if err != nil {
+		restoreFiles(snapshots...)
+		if site.Enabled {
+			_ = nginxReloadIfRunning()
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (a *app) handleSiteNginxGet(w http.ResponseWriter, r *http.Request) {
+	if a.authorize(w, r, false) == nil {
+		return
+	}
+	a.adminMu.Lock()
+	defer a.adminMu.Unlock()
+	sites, err := a.loadSites()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	for _, site := range sites {
+		if site.ID != r.PathValue("id") {
+			continue
+		}
+		path := siteConfigPath(site)
+		config, readErr := os.ReadFile(path)
+		if errors.Is(readErr, os.ErrNotExist) {
+			config = []byte(renderSiteConfig(site, a.loadNginxSettings()))
+		} else if readErr != nil {
+			writeError(w, readErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"config":     string(config),
+			"path":       path,
+			"customized": site.NginxConfig != "",
+		})
+		return
+	}
+	writeError(w, &apiError{http.StatusNotFound, "站点不存在"})
+}
+
+func (a *app) handleSiteNginxPut(w http.ResponseWriter, r *http.Request) {
+	if a.authorize(w, r, true) == nil {
+		return
+	}
+	if !packageInstalled("nginx") {
+		writeError(w, &apiError{http.StatusConflict, "请先安装 Nginx"})
+		return
+	}
+	var request struct {
+		Config string `json:"config"`
+	}
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+	config, err := normalizeSiteNginxConfig(request.Config)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	a.adminMu.Lock()
+	defer a.adminMu.Unlock()
+	sites, err := a.loadSites()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	index := -1
+	for i := range sites {
+		if sites[i].ID == r.PathValue("id") {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		writeError(w, &apiError{http.StatusNotFound, "站点不存在"})
+		return
+	}
+	if err := a.applySiteNginxOverride(sites, index, config); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *app) handleSiteNginxDelete(w http.ResponseWriter, r *http.Request) {
+	if a.authorize(w, r, true) == nil {
+		return
+	}
+	if !packageInstalled("nginx") {
+		writeError(w, &apiError{http.StatusConflict, "请先安装 Nginx"})
+		return
+	}
+	a.adminMu.Lock()
+	defer a.adminMu.Unlock()
+	sites, err := a.loadSites()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	index := -1
+	for i := range sites {
+		if sites[i].ID == r.PathValue("id") {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		writeError(w, &apiError{http.StatusNotFound, "站点不存在"})
+		return
+	}
+	if err := a.applySiteNginxOverride(sites, index, ""); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *app) applySite(site siteDefinition, previous *siteDefinition) error {
 	if err := ensureNginxLayout(); err != nil {
 		return err
@@ -519,12 +721,8 @@ func (a *app) applySite(site siteDefinition, previous *siteDefinition) error {
 		if err := os.MkdirAll(site.Root, 0755); err != nil {
 			return err
 		}
-		index := filepath.Join(site.Root, "index.html")
-		if _, err := os.Stat(index); errors.Is(err, os.ErrNotExist) {
-			content := fmt.Sprintf("<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><title>%s</title><h1>%s</h1></html>\n", site.Domain, site.Domain)
-			if err := os.WriteFile(index, []byte(content), 0644); err != nil {
-				return err
-			}
+		if err := ensureDefaultSiteFiles(site); err != nil {
+			return err
 		}
 	}
 	targetPath := siteConfigPath(site)
@@ -712,6 +910,7 @@ func (a *app) handleSiteUpdate(w http.ResponseWriter, r *http.Request) {
 	site.Domain = previous.Domain
 	site.CreatedAt = previous.CreatedAt
 	site.Enabled = previous.Enabled
+	site.NginxConfig = previous.NginxConfig
 	if err := validateSiteBase(&site); err != nil {
 		writeError(w, err)
 		return

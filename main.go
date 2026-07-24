@@ -137,6 +137,9 @@ func main() {
 	mux.HandleFunc("POST /api/admin/sites", a.handleSiteCreate)
 	mux.HandleFunc("PUT /api/admin/sites/{id}", a.handleSiteUpdate)
 	mux.HandleFunc("DELETE /api/admin/sites/{id}", a.handleSiteDelete)
+	mux.HandleFunc("GET /api/admin/sites/{id}/nginx", a.handleSiteNginxGet)
+	mux.HandleFunc("PUT /api/admin/sites/{id}/nginx", a.handleSiteNginxPut)
+	mux.HandleFunc("DELETE /api/admin/sites/{id}/nginx", a.handleSiteNginxDelete)
 	mux.HandleFunc("POST /api/admin/sites/{id}/{action}", a.handleSiteAction)
 	mux.HandleFunc("GET /api/admin/php", a.handlePHPGet)
 	mux.HandleFunc("PUT /api/admin/php/settings", a.handlePHPSettingsPut)
@@ -168,6 +171,7 @@ func main() {
 	mux.HandleFunc("PUT /api/admin/ssh-settings", a.handleSSHSettingsPut)
 	mux.HandleFunc("DELETE /api/admin/ssh-settings", a.handleSSHSettingsDelete)
 	mux.HandleFunc("GET /ws/ssh", a.handleSSH)
+	mux.HandleFunc("GET /ws/terminal", a.handleTerminal)
 	appIndex, err := embeddedFiles.ReadFile("public/app/index.html")
 	if err != nil {
 		log.Fatal(err)

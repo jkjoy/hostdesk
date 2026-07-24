@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { FolderOpen, Pause, Play, Plus, Settings2, Trash2 } from "@lucide/vue";
+import { ExternalLink, FileCode2, FolderOpen, Pause, Play, Plus, RotateCcw, Save, Settings2, Trash2 } from "@lucide/vue";
 import { api } from "../api";
 import { errorMessage, useUI } from "../ui";
 import AppModal from "../components/AppModal.vue";
@@ -21,6 +21,12 @@ const certificates = ref<CertificateOption[]>([]);
 const loading = ref(false);
 const modal = ref(false);
 const editing = ref<Site | null>(null);
+const nginxModal = ref(false);
+const nginxSite = ref<Site | null>(null);
+const nginxConfig = ref("");
+const nginxConfigPath = ref("");
+const nginxCustomized = ref(false);
+const nginxLoading = ref(false);
 const form = reactive({
   domain: "", aliases: "", type: "static", root: "", upstream: "", rewriteMode: "laravel", rewriteRules: "",
   ssl: false, certificateMode: "managed" as "managed" | "custom", certificateId: "", certificatePem: "", privateKeyPem: "",
@@ -103,13 +109,62 @@ async function remove(site: Site) {
   }
 }
 
+async function openNginx(site: Site) {
+  nginxSite.value = site;
+  nginxConfig.value = "";
+  nginxConfigPath.value = "";
+  nginxCustomized.value = false;
+  nginxModal.value = true;
+  nginxLoading.value = true;
+  try {
+    const data = await api<{ config: string; path: string; customized: boolean }>(`/api/admin/sites/${site.id}/nginx`);
+    nginxConfig.value = data.config;
+    nginxConfigPath.value = data.path;
+    nginxCustomized.value = data.customized;
+  } catch (e) {
+    nginxModal.value = false;
+    notify(errorMessage(e), "error");
+  } finally {
+    nginxLoading.value = false;
+  }
+}
+
+async function saveNginx() {
+  if (!nginxSite.value) return;
+  nginxLoading.value = true;
+  try {
+    await api(`/api/admin/sites/${nginxSite.value.id}/nginx`, { method: "PUT", body: { config: nginxConfig.value } });
+    nginxCustomized.value = true;
+    notify(nginxSite.value.enabled ? "Nginx 配置已校验、保存并重新加载" : "Nginx 配置已校验并保存");
+  } catch (e) {
+    notify(errorMessage(e), "error");
+  } finally {
+    nginxLoading.value = false;
+  }
+}
+
+async function resetNginx() {
+  if (!nginxSite.value || !await confirm("恢复托管配置", `将重新生成 ${nginxSite.value.domain} 的 Nginx 配置，当前手工修改会被替换。`, "恢复")) return;
+  nginxLoading.value = true;
+  try {
+    await api(`/api/admin/sites/${nginxSite.value.id}/nginx`, { method: "DELETE" });
+    notify("已恢复 HostDesk 托管配置");
+    await openNginx(nginxSite.value);
+  } catch (e) {
+    notify(errorMessage(e), "error");
+  } finally {
+    nginxLoading.value = false;
+  }
+}
+
 function openFiles(site: Site) { emit("openFiles", site.root); }
+function siteURL(site: Site) { return `${site.ssl ? "https" : "http"}://${site.domain}`; }
 onMounted(load);
 </script>
 
 <template>
   <PageHeader title="网站管理" subtitle="Nginx 虚拟主机与网站目录" kicker="SITES"><button class="button primary" @click="open()"><Plus :size="16" />添加网站</button></PageHeader>
-  <div class="data-surface"><div class="table-scroll"><table class="data-table"><thead><tr><th>域名</th><th>类型</th><th>目录 / 上游</th><th>HTTPS</th><th>状态</th><th class="actions-column">操作</th></tr></thead><tbody><tr v-for="site in sites" :key="site.id"><td><strong>{{ site.domain }}</strong><small v-if="site.aliases.length">{{ site.aliases.join(', ') }}</small></td><td>{{ { static: '静态', php: 'PHP', proxy: '反代' }[site.type] || site.type }}</td><td class="truncate-cell" :title="site.type === 'proxy' ? site.upstream : site.root">{{ site.type === 'proxy' ? site.upstream : site.root }}</td><td>{{ site.ssl ? '已启用' : 'HTTP' }}</td><td><span class="status-pill" :class="{ running: site.enabled, stopped: !site.enabled }">{{ site.enabled ? '启用' : '停用' }}</span></td><td><div class="row-actions"><button v-if="site.type !== 'proxy'" class="button compact" @click="openFiles(site)"><FolderOpen :size="15" />文件</button><button class="icon-button" title="配置" @click="open(site)"><Settings2 :size="16" /></button><button class="icon-button" :title="site.enabled ? '停用' : '启用'" @click="toggle(site)"><Pause v-if="site.enabled" :size="16" /><Play v-else :size="16" /></button><button class="icon-button danger" title="删除" @click="remove(site)"><Trash2 :size="16" /></button></div></td></tr></tbody></table></div><EmptyState v-if="!loading && !sites.length" message="还没有网站" /></div>
+  <div class="data-surface"><div class="table-scroll"><table class="data-table"><thead><tr><th>域名</th><th>类型</th><th>目录 / 上游</th><th>HTTPS</th><th>状态</th><th class="actions-column">操作</th></tr></thead><tbody><tr v-for="site in sites" :key="site.id"><td><a class="site-domain-link" :href="siteURL(site)" target="_blank" rel="noopener noreferrer" :title="`新窗口打开 ${site.domain}`"><strong>{{ site.domain }}</strong><ExternalLink :size="13" /></a><small v-if="site.aliases.length">{{ site.aliases.join(', ') }}</small></td><td>{{ { static: '静态', php: 'PHP', proxy: '反代' }[site.type] || site.type }}</td><td class="truncate-cell" :title="site.type === 'proxy' ? site.upstream : site.root">{{ site.type === 'proxy' ? site.upstream : site.root }}</td><td>{{ site.ssl ? '已启用' : 'HTTP' }}</td><td><span class="status-pill" :class="{ running: site.enabled, stopped: !site.enabled }">{{ site.enabled ? '启用' : '停用' }}</span></td><td><div class="row-actions"><button v-if="site.type !== 'proxy'" class="button compact" @click="openFiles(site)"><FolderOpen :size="15" />文件</button><button class="icon-button" title="编辑 Nginx 配置" @click="openNginx(site)"><FileCode2 :size="16" /></button><button class="icon-button" title="网站设置" @click="open(site)"><Settings2 :size="16" /></button><button class="icon-button" :title="site.enabled ? '停用' : '启用'" @click="toggle(site)"><Pause v-if="site.enabled" :size="16" /><Play v-else :size="16" /></button><button class="icon-button danger" title="删除" @click="remove(site)"><Trash2 :size="16" /></button></div></td></tr></tbody></table></div><EmptyState v-if="!loading && !sites.length" message="还没有网站" /></div>
   <AppModal v-if="modal" :title="editing ? `修改 ${editing.domain}` : '添加网站'" wide :busy="loading" :submit-label="editing ? '保存配置' : '创建网站'" @close="modal = false" @submit="save">
     <div class="form-grid">
       <label class="field">主域名<input v-model="form.domain" :disabled="!!editing" placeholder="example.com" required></label>
@@ -129,5 +184,14 @@ onMounted(load);
         </template>
       </template>
     </div>
+  </AppModal>
+  <AppModal v-if="nginxModal" :title="`Nginx 配置 · ${nginxSite?.domain || ''}`" wide :busy="nginxLoading" @close="nginxModal = false" @submit="saveNginx">
+    <textarea v-model="nginxConfig" class="code-editor" spellcheck="false" :disabled="nginxLoading" aria-label="Nginx 配置"></textarea>
+    <div class="editor-meta"><code>{{ nginxConfigPath }}</code><span>{{ nginxCustomized ? '手工配置' : 'HostDesk 托管' }}</span></div>
+    <template #actions>
+      <button v-if="nginxCustomized" class="button quiet" type="button" :disabled="nginxLoading" @click="resetNginx"><RotateCcw :size="16" />恢复托管配置</button>
+      <button class="button quiet" type="button" :disabled="nginxLoading" @click="nginxModal = false">取消</button>
+      <button class="button primary" type="submit" :disabled="nginxLoading"><Save :size="16" />保存并重载</button>
+    </template>
   </AppModal>
 </template>
