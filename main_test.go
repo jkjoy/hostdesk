@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -170,6 +171,23 @@ func TestSPAHandlerServesFrontendRoutesOnly(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("non-SPA path %s returned status %d", requestPath, response.Code)
+		}
+	}
+}
+
+func TestTerminalSize(t *testing.T) {
+	for _, test := range []struct {
+		rows, cols         int
+		wantRows, wantCols int
+	}{
+		{24, 80, 24, 80},
+		{0, 0, 30, 100},
+		{1000, 1000, 30, 100},
+		{40, 1, 40, 100},
+	} {
+		rows, cols := terminalSize(test.rows, test.cols)
+		if rows != test.wantRows || cols != test.wantCols {
+			t.Fatalf("terminalSize(%d, %d) = (%d, %d), want (%d, %d)", test.rows, test.cols, rows, cols, test.wantRows, test.wantCols)
 		}
 	}
 }
@@ -575,6 +593,36 @@ func TestDNSSettingsRejectUpdateAndClearTogether(t *testing.T) {
 	}
 }
 
+func TestSSHSettingsEncryptPassword(t *testing.T) {
+	dataDir := t.TempDir()
+	a := newAuthTestApp(t, dataDir)
+	a.dataDir = dataDir
+	a.allowedSSH = map[string]bool{"127.0.0.1": true}
+	request := sshSettingsRequest{Host: "127.0.0.1", Port: 22, Username: "root", Password: "server-password"}
+	view, err := a.saveSSHSettings(request)
+	if err != nil || !view.PasswordConfigured || view.Username != "root" {
+		t.Fatalf("SSH settings were not saved: %+v err=%v", view, err)
+	}
+	stored, err := a.appSetting(settingSSHPassword)
+	if err != nil || stored == "" || strings.Contains(stored, request.Password) {
+		t.Fatalf("SSH password was not encrypted: value=%q err=%v", stored, err)
+	}
+	credentials, err := a.savedSSHCredentials()
+	if err != nil || credentials.Password != request.Password {
+		t.Fatalf("SSH password did not round trip: %+v err=%v", credentials, err)
+	}
+	if _, err := a.saveSSHSettings(sshSettingsRequest{Host: "not-allowed", Port: 22, Username: "root"}); err == nil {
+		t.Fatal("disallowed SSH host was saved")
+	}
+	if err := a.clearSSHSettings(); err != nil {
+		t.Fatal(err)
+	}
+	view, err = a.sshSettings()
+	if err != nil || view.PasswordConfigured || view.Host != "" {
+		t.Fatalf("SSH settings were not cleared: %+v err=%v", view, err)
+	}
+}
+
 func TestVersionComparison(t *testing.T) {
 	for _, test := range []struct {
 		current string
@@ -620,7 +668,7 @@ func TestUpdateAssetVerification(t *testing.T) {
 
 func TestFTPConfigurationAndValidation(t *testing.T) {
 	config := renderVSFTPDConfig()
-	for _, directive := range []string{"anonymous_enable=NO", "local_enable=YES", "write_enable=YES", "chroot_local_user=YES", "local_root=/srv/ftp/$USER", "pasv_min_port=40000", "pasv_max_port=40100"} {
+	for _, directive := range []string{"anonymous_enable=NO", "local_enable=YES", "write_enable=YES", "local_umask=002", "chroot_local_user=YES", "local_root=/srv/ftp/$USER", "user_config_dir=/etc/vsftpd/users", "pasv_min_port=40000", "pasv_max_port=40100"} {
 		if !strings.Contains(config, directive) {
 			t.Fatalf("vsftpd configuration missing %q", directive)
 		}
@@ -637,6 +685,58 @@ func TestFTPConfigurationAndValidation(t *testing.T) {
 	definition, ok := components()["ftp"]
 	if !ok || definition.Service != "vsftpd" || !slices.Contains(definition.Packages, "vsftpd") {
 		t.Fatalf("FTP component definition invalid: %+v", definition)
+	}
+	sites := []siteDefinition{
+		{ID: "static", Domain: "static.example.com", Type: "static", Root: "/var/www/static.example.com/public"},
+		{ID: "php", Domain: "php.example.com", Type: "php", Root: "/var/www/php.example.com/public"},
+		{ID: "proxy", Domain: "proxy.example.com", Type: "proxy", Upstream: "http://127.0.0.1:8080"},
+		{ID: "outside", Domain: "outside.example.com", Type: "static", Root: "/srv/outside"},
+	}
+	options := availableFTPSites(sites)
+	if len(options) != 2 || options[0].ID != "static" || options[1].ID != "php" {
+		t.Fatalf("unexpected FTP site options: %+v", options)
+	}
+	if site, err := resolveFTPSite(sites, "php"); err != nil || site.Root != "/var/www/php.example.com/public" {
+		t.Fatalf("valid FTP site was not resolved: %+v, %v", site, err)
+	}
+	if _, err := resolveFTPSite(sites, "proxy"); err == nil {
+		t.Fatal("proxy site was accepted as an FTP root")
+	}
+}
+
+func TestFTPUserSiteMigration(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), authDatabaseName)
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE ftp_users (
+		username TEXT PRIMARY KEY,
+		home TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`)
+	if err == nil {
+		_, err = db.Exec("INSERT INTO ftp_users (username, home, created_at, updated_at) VALUES ('legacy', '/srv/ftp/legacy', 'now', 'now')")
+	}
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = openAuthDatabase(filepath.Dir(databasePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var siteID string
+	if err := db.QueryRow("SELECT site_id FROM ftp_users WHERE username = 'legacy'").Scan(&siteID); err != nil {
+		t.Fatal(err)
+	}
+	if siteID != "" {
+		t.Fatalf("legacy FTP user received unexpected site binding: %q", siteID)
 	}
 }
 

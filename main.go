@@ -164,6 +164,9 @@ func main() {
 	mux.HandleFunc("DELETE /api/admin/containers/{id}", a.handleContainerDelete)
 	mux.HandleFunc("GET /api/admin/containers/{id}/logs", a.handleContainerLogs)
 	mux.HandleFunc("POST /api/admin/containers/{id}/{action}", a.handleContainerAction)
+	mux.HandleFunc("GET /api/admin/ssh-settings", a.handleSSHSettingsGet)
+	mux.HandleFunc("PUT /api/admin/ssh-settings", a.handleSSHSettingsPut)
+	mux.HandleFunc("DELETE /api/admin/ssh-settings", a.handleSSHSettingsDelete)
 	mux.HandleFunc("GET /ws/ssh", a.handleSSH)
 	appIndex, err := embeddedFiles.ReadFile("public/app/index.html")
 	if err != nil {
@@ -234,7 +237,7 @@ func newApp() (*app, error) {
 	for _, host := range strings.Split(envString("SSH_HOSTS", "127.0.0.1,localhost,::1"), ",") {
 		allowed[strings.TrimSpace(host)] = true
 	}
-	return &app{
+	a := &app{
 		root:            root,
 		rootReal:        rootReal,
 		dataDir:         dataDir,
@@ -245,7 +248,11 @@ func newApp() (*app, error) {
 		allowedSSH:      allowed,
 		hostFingerprint: strings.TrimSpace(os.Getenv("SSH_HOST_KEY_SHA256")),
 		sessions:        make(map[string]*sessionInfo),
-	}, nil
+	}
+	if err := a.migrateLegacyFTPBindings(); err != nil {
+		log.Printf("迁移旧 FTP 网站绑定失败：%v", err)
+	}
+	return a, nil
 }
 
 func derivePassword(password, encodedSalt string) (string, error) {
@@ -1245,6 +1252,7 @@ type sshMessage struct {
 	Data       string `json:"data"`
 	Rows       int    `json:"rows"`
 	Cols       int    `json:"cols"`
+	UseSaved   bool   `json:"useSavedCredential"`
 }
 
 type wsWriter struct {
@@ -1296,9 +1304,17 @@ func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
 	if connect.Port == 0 {
 		connect.Port = 22
 	}
-	if (!a.allowedSSH["*"] && !a.allowedSSH[connect.Host]) || connect.Port < 1 || connect.Port > 65535 || connect.Username == "" || len(connect.Username) > 64 {
-		_ = writer.send(map[string]string{"type": "error", "message": "SSH 参数或主机不在允许范围内"})
+	if err := a.validateSSHIdentity(connect.Host, connect.Port, connect.Username); err != nil {
+		_ = writer.send(map[string]string{"type": "error", "message": err.Error()})
 		return
+	}
+	if connect.UseSaved && connect.Password == "" && connect.PrivateKey == "" {
+		saved, savedErr := a.savedSSHCredentials()
+		if savedErr != nil || !saved.PasswordConfigured || saved.Host != connect.Host || saved.Port != connect.Port || saved.Username != connect.Username {
+			_ = writer.send(map[string]string{"type": "error", "message": "已保存的 SSH 凭据不可用"})
+			return
+		}
+		connect.Password = saved.Password
 	}
 
 	authMethods := make([]ssh.AuthMethod, 0, 2)
@@ -1344,7 +1360,8 @@ func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
 	stdin, _ := session.StdinPipe()
 	stdout, _ := session.StdoutPipe()
 	stderr, _ := session.StderrPipe()
-	if err := session.RequestPty("xterm-256color", 30, 100, ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}); err != nil {
+	rows, cols := terminalSize(connect.Rows, connect.Cols)
+	if err := session.RequestPty("xterm-256color", rows, cols, ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}); err != nil {
 		_ = writer.send(map[string]string{"type": "error", "message": err.Error()})
 		return
 	}
@@ -1397,6 +1414,16 @@ func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	<-done
+}
+
+func terminalSize(rows, cols int) (int, int) {
+	if rows < 1 || rows > 999 {
+		rows = 30
+	}
+	if cols < 2 || cols > 999 {
+		cols = 100
+	}
+	return rows, cols
 }
 
 func init() {

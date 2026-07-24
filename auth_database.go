@@ -80,6 +80,7 @@ func openAuthDatabase(dataDir string) (*sql.DB, error) {
 		`CREATE TABLE IF NOT EXISTS ftp_users (
 			username TEXT PRIMARY KEY,
 			home TEXT NOT NULL,
+			site_id TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -89,11 +90,49 @@ func openAuthDatabase(dataDir string) (*sql.DB, error) {
 			return nil, fmt.Errorf("初始化认证数据库: %w", err)
 		}
 	}
+	if err := migrateFTPUsers(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := migrateLegacyAdministrator(db, filepath.Join(dataDir, "config.json")); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return db, nil
+}
+
+func migrateFTPUsers(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(ftp_users)")
+	if err != nil {
+		return fmt.Errorf("检查 FTP 用户表: %w", err)
+	}
+	defer rows.Close()
+	hasSiteID := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "site_id" {
+			hasSiteID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if hasSiteID {
+		return nil
+	}
+	if _, err := db.Exec("ALTER TABLE ftp_users ADD COLUMN site_id TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("迁移 FTP 用户网站绑定: %w", err)
+	}
+	return nil
 }
 
 func migrateLegacyAdministrator(db *sql.DB, configPath string) error {
