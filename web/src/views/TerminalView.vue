@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { CornerDownLeft, Eraser, Plug, RotateCw, Unplug } from "@lucide/vue";
+import { Eraser, Plug, RotateCw, Unplug } from "@lucide/vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -10,12 +10,50 @@ import PageHeader from "../components/PageHeader.vue";
 const container = ref<HTMLElement>();
 const connected = ref(false);
 const status = ref("未连接");
-const command = ref("");
 let terminal: Terminal | null = null;
 let fit: FitAddon | null = null;
 let socket: WebSocket | null = null;
 let observer: ResizeObserver | null = null;
+let ansiObserver: MutationObserver | null = null;
 let resizeFrame = 0;
+
+const ansiColors = [
+  "#4b5550", "#ef7777", "#49c99a", "#e4bd65", "#71a7ec", "#c792ea", "#56c7d9", "#d9e1de",
+  "#75817b", "#ff9292", "#67dfae", "#f1d37f", "#91bcf3", "#d7a8f3", "#7adce8", "#f4f7f6",
+];
+const colorSteps = [0x00, 0x5f, 0x87, 0xaf, 0xd7, 0xff];
+for (let index = 0; index < 216; index++) {
+  const red = colorSteps[Math.floor(index / 36) % 6];
+  const green = colorSteps[Math.floor(index / 6) % 6];
+  const blue = colorSteps[index % 6];
+  ansiColors.push(`#${red.toString(16).padStart(2, "0")}${green.toString(16).padStart(2, "0")}${blue.toString(16).padStart(2, "0")}`);
+}
+for (let index = 0; index < 24; index++) {
+  const value = (8 + index * 10).toString(16).padStart(2, "0");
+  ansiColors.push(`#${value}${value}${value}`);
+}
+
+function applyAnsiColors(element: Element) {
+  if (!(element instanceof HTMLElement)) return;
+  let foreground = "";
+  let background = "";
+  for (const name of element.classList) {
+    const match = /^xterm-(fg|bg)-(\d+)$/.exec(name);
+    if (!match) continue;
+    const index = Number(match[2]);
+    const value = index === 257 ? (match[1] === "fg" ? "#151918" : "#d9e1de") : ansiColors[index];
+    if (match[1] === "fg") foreground = value || "";
+    if (match[1] === "bg") background = value || "";
+  }
+  foreground ? element.style.setProperty("--terminal-ansi-fg", foreground) : element.style.removeProperty("--terminal-ansi-fg");
+  background ? element.style.setProperty("--terminal-ansi-bg", background) : element.style.removeProperty("--terminal-ansi-bg");
+}
+
+function syncAnsiColors(node: Node) {
+  if (!(node instanceof Element)) return;
+  applyAnsiColors(node);
+  node.querySelectorAll(".xterm-rows span").forEach(applyAnsiColors);
+}
 
 function sendSize() {
   if (socket?.readyState === WebSocket.OPEN && terminal && terminal.cols > 0 && terminal.rows > 0) {
@@ -45,14 +83,29 @@ function init() {
     fontSize: 13,
     lineHeight: 1.25,
     scrollback: 5000,
-    theme: { background: "#151918", foreground: "#d9e1de", cursor: "#49c99a", green: "#49c99a", red: "#ef7777" },
+    theme: {
+      background: "#151918", foreground: "#d9e1de", cursor: "#49c99a", cursorAccent: "#151918",
+      selectionBackground: "#315f50", black: ansiColors[0], red: ansiColors[1], green: ansiColors[2],
+      yellow: ansiColors[3], blue: ansiColors[4], magenta: ansiColors[5], cyan: ansiColors[6], white: ansiColors[7],
+      brightBlack: ansiColors[8], brightRed: ansiColors[9], brightGreen: ansiColors[10], brightYellow: ansiColors[11],
+      brightBlue: ansiColors[12], brightMagenta: ansiColors[13], brightCyan: ansiColors[14], brightWhite: ansiColors[15],
+      extendedAnsi: ansiColors.slice(16),
+    },
   });
   const addon = new FitAddon();
   terminal = instance;
   fit = addon;
   instance.loadAddon(addon);
   instance.open(container.value);
-  instance.writeln("\x1b[38;5;72mHostDesk 本机终端\x1b[0m\r\n\x1b[38;5;245m正在连接...\x1b[0m");
+  ansiObserver = new MutationObserver(records => {
+    for (const record of records) {
+      if (record.type === "attributes") applyAnsiColors(record.target as Element);
+      record.addedNodes.forEach(syncAnsiColors);
+    }
+  });
+  ansiObserver.observe(container.value, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+  syncAnsiColors(container.value);
+  instance.writeln("\x1b[1;38;5;10mHostDesk 本机终端\x1b[0m\r\n\x1b[38;5;8m正在连接...\x1b[0m");
   instance.onData((data: string) => {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "input", data }));
   });
@@ -74,7 +127,7 @@ function connect() {
   connected.value = false;
   status.value = "连接中";
   terminal.reset();
-  terminal.writeln("\x1b[38;5;245m正在启动本机终端...\x1b[0m");
+  terminal.writeln("\x1b[38;5;8m正在启动本机终端...\x1b[0m");
 
   connection.onopen = () => connection.send(JSON.stringify({
     type: "connect",
@@ -90,10 +143,10 @@ function connect() {
     if (message.type === "ready") {
       connected.value = true;
       status.value = "已连接本机";
-      resize();
+      resize(true);
     }
     if (message.type === "error") {
-      terminal?.writeln(`\r\n\x1b[31m${message.message || "终端连接失败"}\x1b[0m`);
+      terminal?.writeln(`\r\n\x1b[1;38;5;9m${message.message || "终端连接失败"}\x1b[0m`);
       connected.value = false;
       status.value = "连接失败";
       resize(true);
@@ -102,7 +155,7 @@ function connect() {
   };
   connection.onerror = () => {
     if (connection !== socket) return;
-    terminal?.writeln("\r\n\x1b[31mWebSocket 连接失败\x1b[0m");
+    terminal?.writeln("\r\n\x1b[1;38;5;9mWebSocket 连接失败\x1b[0m");
     connected.value = false;
     status.value = "连接失败";
   };
@@ -122,12 +175,6 @@ function disconnect(close = true) {
   status.value = "未连接";
 }
 
-function submitCommand() {
-  if (!connected.value || socket?.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify({ type: "input", data: `${command.value}\r` }));
-  command.value = "";
-}
-
 onMounted(async () => {
   await nextTick();
   init();
@@ -137,29 +184,29 @@ onBeforeUnmount(() => {
   window.cancelAnimationFrame(resizeFrame);
   socket?.close();
   observer?.disconnect();
+  ansiObserver?.disconnect();
   terminal?.dispose();
 });
 </script>
 
 <template>
-  <PageHeader title="终端" subtitle="服务器本机 Shell" kicker="TERMINAL">
-    <span class="connection-state"><i :class="{ connected }"></i>{{ status }}</span>
-    <button v-if="!connected" class="button primary" type="button" @click="connect"><RotateCw :size="16" />重新连接</button>
-    <button v-else class="button" type="button" @click="disconnect()"><Unplug :size="16" />断开</button>
-  </PageHeader>
-  <div class="terminal-shell local-terminal" :class="{ 'has-command': connected }">
-    <div class="terminal-head">
-      <span>{{ status }}</span>
-      <div class="terminal-head-actions">
-        <button v-if="!connected" class="icon-button dark" type="button" title="连接" @click="connect"><Plug :size="16" /></button>
-        <button class="icon-button dark" type="button" title="清屏" @click="terminal?.clear()"><Eraser :size="16" /></button>
+  <div class="terminal-page">
+    <PageHeader title="终端" subtitle="服务器本机 Shell" kicker="TERMINAL">
+      <span class="connection-state"><i :class="{ connected }"></i>{{ status }}</span>
+      <button v-if="!connected" class="button primary" type="button" @click="connect"><RotateCw :size="16" />重新连接</button>
+      <button v-else class="button" type="button" @click="disconnect()"><Unplug :size="16" />断开</button>
+    </PageHeader>
+    <div class="terminal-shell local-terminal">
+      <div class="terminal-head">
+        <span>{{ status }}</span>
+        <div class="terminal-head-actions">
+          <button v-if="!connected" class="icon-button dark" type="button" title="连接" @click="connect"><Plug :size="16" /></button>
+          <button class="icon-button dark" type="button" title="清屏" @click="terminal?.clear()"><Eraser :size="16" /></button>
+        </div>
+      </div>
+      <div class="terminal-stage">
+        <div ref="container" class="terminal" role="application" aria-label="本机终端" @pointerdown="terminal?.focus()"></div>
       </div>
     </div>
-    <div class="terminal-stage">
-      <div ref="container" class="terminal" role="application" aria-label="本机终端" @pointerdown="terminal?.focus()"></div>
-    </div>
-    <form v-if="connected" class="terminal-command" @submit.prevent="submitCommand">
-      <span>#</span><input v-model="command" autocomplete="off" spellcheck="false" aria-label="终端命令"><button class="icon-button dark" type="submit" title="执行命令"><CornerDownLeft :size="17" /></button>
-    </form>
   </div>
 </template>
