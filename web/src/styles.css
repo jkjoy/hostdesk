@@ -237,21 +237,28 @@ a { color: inherit; text-decoration: none; }
 .file-navigation { border: 1px solid var(--line); border-radius: 7px 7px 0 0; background: var(--surface); }
 .file-navigation + .data-surface, .selection-bar + .data-surface { border-top: 0; border-radius: 0 0 7px 7px; }
 .recent-paths { min-height: 36px; padding: 5px 10px; display: flex; align-items: center; gap: 10px; overflow: hidden; border-bottom: 1px solid var(--line); background: var(--surface-soft); }
-.recent-paths > span { flex: none; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+.recent-paths > span { flex: none; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 700; }
 .recent-paths > div { min-width: 0; display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; }.recent-paths > div::-webkit-scrollbar { display: none; }
-.recent-paths button { max-width: 240px; padding: 5px 8px; overflow: hidden; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.recent-paths button { max-width: 240px; padding: 5px 8px; overflow: hidden; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; font: 11px/1.25 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .recent-paths button:hover, .recent-paths button.active { border-color: var(--line); background: var(--surface); color: var(--accent); }
-.file-toolbar { min-height: 46px; padding: 6px 8px 6px 12px; display: flex; align-items: center; gap: 8px; }
-.path-bar { min-width: 0; flex: 1; display: flex; align-items: center; overflow-x: auto; cursor: text; scrollbar-width: none; }.path-bar::-webkit-scrollbar { display: none; }
-.path-bar button { padding: 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
-.path-bar button:hover { background: var(--surface-soft); color: var(--accent); }.path-bar button.current { color: var(--ink); }
+.file-toolbar { min-height: 50px; padding: 7px 8px 7px 12px; display: flex; align-items: center; gap: 8px; }
+.path-bar { min-width: 0; flex: 1; display: flex; align-items: center; gap: 1px; overflow-x: auto; cursor: text; scrollbar-width: none; }.path-bar::-webkit-scrollbar { display: none; }
+.path-bar > svg { flex: none; color: var(--subtle); }
+.path-bar button { min-height: 32px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; font: 600 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; }
+.path-bar button:hover { background: var(--surface-soft); color: var(--accent); }.path-bar button.current { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .path-address { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: center; border: 1px solid var(--accent); border-radius: 5px; background: var(--surface); box-shadow: 0 0 0 2px rgba(31,139,98,.10); }
-.path-address input { width: 100%; min-height: 32px; padding: 5px 9px; border: 0; outline: 0; background: transparent; color: var(--ink); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.path-address input { width: 100%; min-height: 34px; padding: 5px 10px; border: 0; outline: 0; background: transparent; color: var(--ink); font: 500 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .path-address .icon-button { width: 30px; min-height: 28px; border: 0; }
 .selection-bar { min-height: 44px; padding: 6px 10px; display: flex; align-items: center; gap: 6px; border-right: 1px solid var(--line); border-left: 1px solid var(--line); background: var(--accent-soft); }
 .selection-bar strong { margin-right: auto; font-size: 11px; }
 .file-entry { max-width: 360px; padding: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; border: 0; background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
 .file-entry svg { flex: none; color: var(--accent); }.file-entry span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-manager-surface .data-table { min-width: 800px; }
+.file-owner-cell { white-space: nowrap; }.file-owner-cell span { margin: 0 3px; color: var(--subtle); }
+.file-manager-surface { position: relative; transition: border-color .16s ease, box-shadow .16s ease; }
+.file-manager-surface.drag-active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(22,122,87,.12); }
+.file-drop-overlay { position: absolute; inset: 0; z-index: 8; display: grid; place-content: center; justify-items: center; gap: 9px; background: rgba(247,249,248,.94); color: var(--accent); pointer-events: none; }
+.file-drop-overlay strong { font-size: 13px; }
 .file-context-menu { width: 232px; max-height: calc(100vh - 16px); padding: 5px; position: fixed; z-index: 90; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); box-shadow: 0 14px 38px rgba(17, 28, 23, .22); }
 .file-context-title { margin: 1px 4px 5px; padding: 6px 7px 8px; overflow: hidden; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .file-context-menu > button, .file-context-menu > a { width: 100%; min-height: 34px; padding: 0 8px; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); cursor: pointer; font: inherit; font-size: 11px; text-align: left; }

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Archive, ChevronRight, ClipboardPaste, Copy, Download, Ellipsis, File, FileCode, FilePlus, Folder, FolderClock, FolderOpen, FolderPlus, Pencil, RefreshCw, Save, Scissors, Trash2, Upload } from "@lucide/vue";
+import { Archive, ChevronRight, ClipboardPaste, CloudDownload, Copy, Download, Ellipsis, File, FileCode, FilePlus, Folder, FolderClock, FolderOpen, FolderPlus, Pencil, RefreshCw, Save, Scissors, Shield, Trash2, Upload } from "@lucide/vue";
 import { api } from "../api";
 import { errorMessage, formatBytes, displayDate, useUI } from "../ui";
 import AppModal from "../components/AppModal.vue";
 import EmptyState from "../components/EmptyState.vue";
 import PageHeader from "../components/PageHeader.vue";
 
-interface Entry { name: string; path: string; type: "directory" | "file" | "link"; size: number; modified: string; mode: string }
+interface Entry { name: string; path: string; type: "directory" | "file" | "link"; size: number; modified: string; mode: string; owner: string; group: string }
 const props = defineProps<{ initialPath?: string }>();
 const emit = defineEmits<{ pathChanged: [path: string] }>();
 const { notify, confirm } = useUI();
@@ -15,7 +15,9 @@ const path = ref(props.initialPath || "");
 const entries = ref<Entry[]>([]);
 const selected = ref(new Set<string>());
 const loading = ref(false);
+const uploading = ref(false);
 const upload = ref<HTMLInputElement>();
+const draggingFiles = ref(false);
 const recent = ref<string[]>([]);
 const addressMode = ref(false);
 const addressValue = ref("/");
@@ -23,10 +25,19 @@ const addressInput = ref<HTMLInputElement>();
 const fileClipboard = ref<{ mode: "copy" | "move"; paths: string[] } | null>(null);
 const contextMenu = ref<{ x: number; y: number; entry: Entry | null } | null>(null);
 const contextMenuElement = ref<HTMLElement>();
+const remoteModal = ref(false);
+const remoteBusy = ref(false);
+const remoteForm = ref({ url: "", name: "" });
+const permissionModal = ref(false);
+const permissionBusy = ref(false);
+const permissionEntry = ref<Entry | null>(null);
+const permissionForm = ref({ owner: "", group: "", mode: "", recursive: false });
+const identityOptions = ref<{ users: string[]; groups: string[] }>({ users: [], groups: [] });
 const editor = ref<{ path: string; name: string; content: string } | null>(null);
 const prompt = ref<{ title: string; label: string; value: string; action: (value: string) => Promise<void> } | null>(null);
 const promptBusy = ref(false);
 const breadcrumbs = computed(() => ["", ...path.value.split("/").filter(Boolean)].map((part, index, all) => ({ label: index ? part : "根目录", path: all.slice(1, index + 1).join("/") })));
+let dragDepth = 0;
 
 function join(...parts: string[]) { return parts.filter(Boolean).join("/").replace(/\/+/g, "/"); }
 function parent(value: string) { const parts = value.split("/").filter(Boolean); parts.pop(); return parts.join("/"); }
@@ -139,7 +150,85 @@ async function remove(paths = [...selected.value]) { if (!await confirm("删除�
 async function extract(entry: Entry) { if (!await confirm("解压文件", `将 ${entry.name} 解压到当前目录。`, "解压")) return; try { await api("/api/extract", { method: "POST", body: { path: entry.path, destination: path.value } }); notify("解压完成"); await load(); } catch (error) { notify(errorMessage(error), "error"); } }
 async function edit(entry: Entry) { try { const data = await api<{ content: string }>(`/api/file?path=${encodeURIComponent(entry.path)}`); editor.value = { path: entry.path, name: entry.name, content: data.content }; } catch (error) { notify(errorMessage(error), "error"); } }
 async function saveEditor() { if (!editor.value) return; try { await api("/api/file", { method: "PUT", body: { path: editor.value.path, content: editor.value.content } }); notify("文件已保存"); editor.value = null; await load(); } catch (error) { notify(errorMessage(error), "error"); } }
-async function uploadFiles(files: FileList | null) { if (!files) return; for (const file of files) { try { await api(`/api/upload?dir=${encodeURIComponent(path.value)}&name=${encodeURIComponent(file.name)}`, { method: "POST", body: file }); notify(`${file.name} 上传完成`); } catch (error) { notify(`${file.name}: ${errorMessage(error)}`, "error"); } } if (upload.value) upload.value.value = ""; await load(); }
+async function uploadFiles(files: FileList | readonly File[] | null) {
+  const queue = Array.from(files || []);
+  if (!queue.length || uploading.value) return;
+  uploading.value = true;
+  try {
+    for (const file of queue) {
+      try { await api(`/api/upload?dir=${encodeURIComponent(path.value)}&name=${encodeURIComponent(file.name)}`, { method: "POST", body: file }); notify(`${file.name} 上传完成`); }
+      catch (error) { notify(`${file.name}: ${errorMessage(error)}`, "error"); }
+    }
+    await load();
+  } finally {
+    uploading.value = false;
+    if (upload.value) upload.value.value = "";
+  }
+}
+function containsDraggedFiles(event: DragEvent) { return Array.from(event.dataTransfer?.types || []).includes("Files"); }
+function handleDragEnter(event: DragEvent) {
+  if (!containsDraggedFiles(event)) return;
+  dragDepth += 1;
+  draggingFiles.value = true;
+}
+function handleDragOver(event: DragEvent) {
+  if (!containsDraggedFiles(event)) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+function handleDragLeave(event: DragEvent) {
+  if (!draggingFiles.value) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) draggingFiles.value = false;
+}
+function resetDragState() { dragDepth = 0; draggingFiles.value = false; }
+function handleDrop(event: DragEvent) {
+  const files = event.dataTransfer?.files;
+  resetDragState();
+  if (files?.length) void uploadFiles(files);
+}
+function openRemoteDownload() {
+  remoteForm.value = { url: "", name: "" };
+  remoteModal.value = true;
+}
+async function submitRemoteDownload() {
+  if (!remoteForm.value.url.trim()) return;
+  remoteBusy.value = true;
+  try {
+    const data = await api<{ name: string }>("/api/remote-download", { method: "POST", body: { url: remoteForm.value.url.trim(), destination: path.value, name: remoteForm.value.name.trim() } });
+    notify(`${data.name} 下载完成`);
+    remoteModal.value = false;
+    await load();
+  } catch (error) {
+    notify(errorMessage(error), "error");
+  } finally {
+    remoteBusy.value = false;
+  }
+}
+async function openPermissions(entry: Entry) {
+  permissionEntry.value = entry;
+  permissionForm.value = { owner: entry.owner, group: entry.group, mode: entry.mode, recursive: false };
+  permissionModal.value = true;
+  try {
+    identityOptions.value = await api<{ users: string[]; groups: string[] }>("/api/file-identities");
+  } catch (error) {
+    permissionModal.value = false;
+    notify(errorMessage(error), "error");
+  }
+}
+async function submitPermissions() {
+  if (!permissionEntry.value) return;
+  permissionBusy.value = true;
+  try {
+    await api("/api/file-permissions", { method: "POST", body: { path: permissionEntry.value.path, ...permissionForm.value } });
+    notify("权限与属组已更新");
+    permissionModal.value = false;
+    await load();
+  } catch (error) {
+    notify(errorMessage(error), "error");
+  } finally {
+    permissionBusy.value = false;
+  }
+}
 function isArchive(entry: Entry) { return /\.(zip|tar|tar\.gz|tgz)$/i.test(entry.name); }
 function toggleAll() { selected.value = selected.value.size === entries.value.length ? new Set() : new Set(entries.value.map(item => item.path)); }
 function closeContextMenu() { contextMenu.value = null; }
@@ -194,6 +283,7 @@ onMounted(() => {
   window.addEventListener("click", closeContextMenu);
   window.addEventListener("resize", closeContextMenu);
   window.addEventListener("scroll", closeContextOnScroll, true);
+  window.addEventListener("dragend", resetDragState);
   void load();
 });
 onBeforeUnmount(() => {
@@ -201,6 +291,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("click", closeContextMenu);
   window.removeEventListener("resize", closeContextMenu);
   window.removeEventListener("scroll", closeContextOnScroll, true);
+  window.removeEventListener("dragend", resetDragState);
 });
 watch(() => props.initialPath, (next) => { if ((next || "") !== path.value) void load(next || ""); });
 </script>
@@ -209,7 +300,8 @@ watch(() => props.initialPath, (next) => { if ((next || "") !== path.value) void
   <PageHeader title="文件管理" :subtitle="path ? `/${path}` : '/'" kicker="FILE MANAGER">
     <button class="button" type="button" @click="create('directory')"><FolderPlus :size="16" />目录</button>
     <button class="button" type="button" @click="create('file')"><FilePlus :size="16" />文件</button>
-    <button class="button primary" type="button" @click="upload?.click()"><Upload :size="16" />上传</button><input ref="upload" hidden type="file" multiple @change="uploadFiles(($event.target as HTMLInputElement).files)">
+    <button class="button" type="button" @click="openRemoteDownload"><CloudDownload :size="16" />远程下载</button>
+    <button class="button primary" type="button" :disabled="uploading" @click="upload?.click()"><Upload :size="16" />上传</button><input ref="upload" hidden type="file" multiple @change="uploadFiles(($event.target as HTMLInputElement).files)">
   </PageHeader>
   <div class="file-navigation">
     <div v-if="recent.length" class="recent-paths"><span><FolderClock :size="15" />最近路径</span><div><button v-for="item in recent" :key="item" type="button" :class="{ active: item === path }" :title="fullPath(item)" @click="load(item)">{{ fullPath(item) }}</button></div></div>
@@ -220,9 +312,9 @@ watch(() => props.initialPath, (next) => { if ((next || "") !== path.value) void
     </div>
   </div>
   <div v-if="selected.size" class="selection-bar"><strong>已选 {{ selected.size }} 项</strong><button class="button" title="Ctrl+C" @click="setFileClipboard('copy')"><Copy :size="15" />复制</button><button class="button" title="Ctrl+X" @click="setFileClipboard('move')"><Scissors :size="15" />剪切</button><button class="button" @click="archive()"><Archive :size="15" />压缩</button><button class="button danger-text" title="Delete" @click="remove()"><Trash2 :size="15" />删除</button></div>
-  <div class="data-surface" @contextmenu.prevent="openContextMenu($event, null)"><div class="table-scroll"><table class="data-table"><thead><tr><th class="check-column"><input type="checkbox" :checked="entries.length > 0 && selected.size === entries.length" :aria-label="selected.size === entries.length ? '取消全选' : '全选'" @change="toggleAll"></th><th>名称</th><th>大小</th><th>修改时间</th><th>权限</th><th class="actions-column"></th></tr></thead><tbody>
-    <tr v-for="entry in entries" :key="entry.path" :class="{ selected: selectedEntry(entry), cut: isCut(entry) }" @contextmenu.prevent.stop="openContextMenu($event, entry)"><td><input type="checkbox" :checked="selectedEntry(entry)" :aria-label="`选择 ${entry.name}`" @change="toggle(entry)"></td><td><button class="file-entry" type="button" @dblclick="entry.type === 'directory' ? load(entry.path) : edit(entry)" @click="entry.type === 'directory' ? load(entry.path) : edit(entry)"><Folder v-if="entry.type === 'directory'" :size="18" /><FileCode v-else-if="/\.(js|ts|go|php|py|sh|json|html|css|md|ya?ml)$/i.test(entry.name)" :size="18" /><File v-else :size="18" /><span>{{ entry.name }}</span></button></td><td>{{ formatBytes(entry.size, entry.type === 'directory') }}</td><td>{{ displayDate(entry.modified) }}</td><td><code>{{ entry.mode }}</code></td><td><div class="row-actions"><button v-if="entry.type === 'directory'" class="icon-button" title="打开" @click="load(entry.path)"><FolderOpen :size="16" /></button><button v-else class="icon-button" title="编辑" @click="edit(entry)"><Pencil :size="16" /></button><a v-if="entry.type !== 'directory'" class="icon-button" title="下载" :href="`/api/download?path=${encodeURIComponent(entry.path)}`"><Download :size="16" /></a><button v-if="isArchive(entry)" class="icon-button" title="解压" @click="extract(entry)"><Archive :size="16" /></button><button class="icon-button" title="重命名" @click="rename(entry)"><Ellipsis :size="16" /></button><button class="icon-button danger" title="删除" @click="remove([entry.path])"><Trash2 :size="16" /></button></div></td></tr>
-  </tbody></table></div><EmptyState v-if="!loading && !entries.length" message="当前目录为空" /></div>
+  <div class="data-surface file-manager-surface" :class="{ 'drag-active': draggingFiles }" @contextmenu.prevent="openContextMenu($event, null)" @dragenter.prevent="handleDragEnter" @dragover.prevent="handleDragOver" @dragleave.prevent="handleDragLeave" @drop.prevent="handleDrop"><div class="table-scroll"><table class="data-table"><thead><tr><th class="check-column"><input type="checkbox" :checked="entries.length > 0 && selected.size === entries.length" :aria-label="selected.size === entries.length ? '取消全选' : '全选'" @change="toggleAll"></th><th>名称</th><th>大小</th><th>修改时间</th><th>属主 / 属组</th><th>权限</th><th class="actions-column"></th></tr></thead><tbody>
+    <tr v-for="entry in entries" :key="entry.path" :class="{ selected: selectedEntry(entry), cut: isCut(entry) }" @contextmenu.prevent.stop="openContextMenu($event, entry)"><td><input type="checkbox" :checked="selectedEntry(entry)" :aria-label="`选择 ${entry.name}`" @change="toggle(entry)"></td><td><button class="file-entry" type="button" @dblclick="entry.type === 'directory' ? load(entry.path) : edit(entry)" @click="entry.type === 'directory' ? load(entry.path) : edit(entry)"><Folder v-if="entry.type === 'directory'" :size="18" /><FileCode v-else-if="/\.(js|ts|go|php|py|sh|json|html|css|md|ya?ml)$/i.test(entry.name)" :size="18" /><File v-else :size="18" /><span>{{ entry.name }}</span></button></td><td>{{ formatBytes(entry.size, entry.type === 'directory') }}</td><td>{{ displayDate(entry.modified) }}</td><td class="file-owner-cell"><code>{{ entry.owner }}</code><span>:</span><code>{{ entry.group }}</code></td><td><code>{{ entry.mode }}</code></td><td><div class="row-actions"><button v-if="entry.type === 'directory'" class="icon-button" title="打开" @click="load(entry.path)"><FolderOpen :size="16" /></button><button v-else class="icon-button" title="编辑" @click="edit(entry)"><Pencil :size="16" /></button><a v-if="entry.type !== 'directory'" class="icon-button" title="下载" :href="`/api/download?path=${encodeURIComponent(entry.path)}`"><Download :size="16" /></a><button v-if="isArchive(entry)" class="icon-button" title="解压" @click="extract(entry)"><Archive :size="16" /></button><button class="icon-button" title="权限与属主" @click="openPermissions(entry)"><Shield :size="16" /></button><button class="icon-button" title="重命名" @click="rename(entry)"><Ellipsis :size="16" /></button><button class="icon-button danger" title="删除" @click="remove([entry.path])"><Trash2 :size="16" /></button></div></td></tr>
+  </tbody></table></div><EmptyState v-if="!loading && !entries.length" message="当前目录为空" /><div v-if="draggingFiles" class="file-drop-overlay"><Upload :size="30" /><strong>释放以上传</strong></div></div>
   <Teleport to="body"><div v-if="contextMenu" ref="contextMenuElement" class="file-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" role="menu" @click.stop @contextmenu.prevent>
     <div v-if="contextMenu.entry" class="file-context-title" :title="contextMenu.entry.name">{{ contextMenu.entry.name }}</div>
     <button v-if="contextMenu.entry?.type === 'directory'" type="button" role="menuitem" @click="load(contextMenu.entry.path); closeContextMenu()"><FolderOpen :size="16" /><span>打开</span></button>
@@ -234,9 +326,11 @@ watch(() => props.initialPath, (next) => { if ((next || "") !== path.value) void
     <button v-if="fileClipboard" type="button" role="menuitem" @click="pasteClipboard(contextMenu.entry?.type === 'directory' ? contextMenu.entry.path : path)"><ClipboardPaste :size="16" /><span>{{ contextMenu.entry?.type === 'directory' ? '粘贴到此文件夹' : '粘贴到此处' }}</span><kbd>Ctrl+V</kbd></button>
     <button v-if="contextMenu.entry" type="button" role="menuitem" @click="archive(contextPaths(contextMenu.entry)); closeContextMenu()"><Archive :size="16" /><span>压缩</span></button>
     <button v-if="contextMenu.entry && isArchive(contextMenu.entry)" type="button" role="menuitem" @click="extract(contextMenu.entry); closeContextMenu()"><Archive :size="16" /><span>解压到当前目录</span></button>
-    <template v-if="contextMenu.entry"><div class="file-context-separator"></div><button type="button" role="menuitem" @click="rename(contextMenu.entry); closeContextMenu()"><Ellipsis :size="16" /><span>重命名</span><kbd>F2</kbd></button><button class="danger" type="button" role="menuitem" @click="remove(contextPaths(contextMenu.entry)); closeContextMenu()"><Trash2 :size="16" /><span>删除</span><kbd>Del</kbd></button></template>
-    <template v-else><button type="button" role="menuitem" @click="create('directory'); closeContextMenu()"><FolderPlus :size="16" /><span>新建目录</span></button><button type="button" role="menuitem" @click="create('file'); closeContextMenu()"><FilePlus :size="16" /><span>新建文件</span></button><div class="file-context-separator"></div><button type="button" role="menuitem" :disabled="!entries.length" @click="selected = new Set(entries.map(item => item.path)); closeContextMenu()"><Copy :size="16" /><span>全选</span><kbd>Ctrl+A</kbd></button><button type="button" role="menuitem" @click="load(); closeContextMenu()"><RefreshCw :size="16" /><span>刷新</span></button></template>
+    <template v-if="contextMenu.entry"><div class="file-context-separator"></div><button type="button" role="menuitem" @click="openPermissions(contextMenu.entry); closeContextMenu()"><Shield :size="16" /><span>权限与属主</span></button><button type="button" role="menuitem" @click="rename(contextMenu.entry); closeContextMenu()"><Ellipsis :size="16" /><span>重命名</span><kbd>F2</kbd></button><button class="danger" type="button" role="menuitem" @click="remove(contextPaths(contextMenu.entry)); closeContextMenu()"><Trash2 :size="16" /><span>删除</span><kbd>Del</kbd></button></template>
+    <template v-else><button type="button" role="menuitem" @click="create('directory'); closeContextMenu()"><FolderPlus :size="16" /><span>新建目录</span></button><button type="button" role="menuitem" @click="create('file'); closeContextMenu()"><FilePlus :size="16" /><span>新建文件</span></button><button type="button" role="menuitem" @click="openRemoteDownload(); closeContextMenu()"><CloudDownload :size="16" /><span>远程下载</span></button><div class="file-context-separator"></div><button type="button" role="menuitem" :disabled="!entries.length" @click="selected = new Set(entries.map(item => item.path)); closeContextMenu()"><Copy :size="16" /><span>全选</span><kbd>Ctrl+A</kbd></button><button type="button" role="menuitem" @click="load(); closeContextMenu()"><RefreshCw :size="16" /><span>刷新</span></button></template>
   </div></Teleport>
+  <AppModal v-if="remoteModal" title="远程下载" submit-label="开始下载" :busy="remoteBusy" @close="remoteModal = false" @submit="submitRemoteDownload"><div class="form-grid"><label class="field full">下载地址<input v-model="remoteForm.url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/file.zip" required autofocus></label><label class="field full">保存文件名（可选）<input v-model="remoteForm.name" autocomplete="off" placeholder="自动识别"></label></div><div class="editor-meta"><span>保存到</span><code>{{ fullPath() }}</code></div></AppModal>
+  <AppModal v-if="permissionModal && permissionEntry" :title="`权限 · ${permissionEntry.name}`" submit-label="应用设置" :busy="permissionBusy" @close="permissionModal = false" @submit="submitPermissions"><div class="form-grid"><label class="field">属主<input v-model="permissionForm.owner" list="file-owner-options" autocomplete="off" required><datalist id="file-owner-options"><option v-for="item in identityOptions.users" :key="item" :value="item"></option></datalist></label><label class="field">用户组<input v-model="permissionForm.group" list="file-group-options" autocomplete="off" required><datalist id="file-group-options"><option v-for="item in identityOptions.groups" :key="item" :value="item"></option></datalist></label><label class="field full">权限模式<input v-model="permissionForm.mode" inputmode="numeric" pattern="0?[0-7]{3}" maxlength="4" placeholder="755" required></label><label v-if="permissionEntry.type === 'directory'" class="check-field full"><input v-model="permissionForm.recursive" type="checkbox">递归应用到目录内容</label></div><div class="editor-meta"><code>/{{ permissionEntry.path }}</code><span>{{ permissionEntry.owner }}:{{ permissionEntry.group }} · {{ permissionEntry.mode }}</span></div></AppModal>
   <AppModal v-if="prompt" :title="prompt.title" :busy="promptBusy" @close="prompt = null" @submit="submitPrompt"><label class="field">{{ prompt.label }}<input v-model="prompt.value" required autofocus></label></AppModal>
   <AppModal v-if="editor" :title="editor.name" wide submit-label="保存文件" @close="editor = null" @submit="saveEditor"><textarea v-model="editor.content" class="code-editor" spellcheck="false"></textarea><div class="editor-meta"><code>/{{ editor.path }}</code><span>{{ editor.content.split('\n').length }} 行</span></div><template #actions><button class="button quiet" type="button" @click="editor = null">关闭</button><button class="button primary" type="submit"><Save :size="16" />保存</button></template></AppModal>
 </template>

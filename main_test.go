@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +64,12 @@ func authenticatedRequest(t *testing.T, handler http.HandlerFunc, method, body, 
 	response := httptest.NewRecorder()
 	handler(response, request)
 	return response
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
 
 func TestFreshDatabaseRequiresSetupAndCreatesAdministrator(t *testing.T) {
@@ -923,6 +931,95 @@ func TestSafeArchiveName(t *testing.T) {
 	}
 }
 
+func TestRemoteDownloadSavesFileAndUsesResponseName(t *testing.T) {
+	root := t.TempDir()
+	a := &app{
+		root: root, rootReal: root, uploadMax: 1024,
+		sessions: map[string]*sessionInfo{"session": {CSRF: "csrf", Expires: time.Now().Add(time.Hour), User: "admin"}},
+		remoteClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Header.Get("User-Agent") != "HostDesk/"+version {
+				t.Fatalf("unexpected user agent: %q", request.Header.Get("User-Agent"))
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Disposition": []string{`attachment; filename="remote.txt"`}},
+				Body:       io.NopCloser(strings.NewReader("remote content")),
+				Request:    request,
+			}, nil
+		})},
+	}
+	response := authenticatedRequest(t, a.handleRemoteDownload, http.MethodPost,
+		`{"url":"https://example.com/ignored.bin","destination":"","name":""}`,
+		"csrf", &http.Cookie{Name: "hostdesk_session", Value: "session"})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("remote download failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	data, err := os.ReadFile(filepath.Join(root, "remote.txt"))
+	if err != nil || string(data) != "remote content" {
+		t.Fatalf("unexpected downloaded file: %q, %v", data, err)
+	}
+}
+
+func TestRemoteDownloadRejectsInvalidURLAndOversizedFile(t *testing.T) {
+	root := t.TempDir()
+	a := &app{
+		root: root, rootReal: root, uploadMax: 4,
+		sessions: map[string]*sessionInfo{"session": {CSRF: "csrf", Expires: time.Now().Add(time.Hour), User: "admin"}},
+		remoteClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("too large")),
+				Request:    request,
+			}, nil
+		})},
+	}
+	cookie := &http.Cookie{Name: "hostdesk_session", Value: "session"}
+	response := authenticatedRequest(t, a.handleRemoteDownload, http.MethodPost,
+		`{"url":"file:///etc/passwd","destination":"","name":"passwd"}`, "csrf", cookie)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid remote URL returned %d: %s", response.Code, response.Body.String())
+	}
+	response = authenticatedRequest(t, a.handleRemoteDownload, http.MethodPost,
+		`{"url":"https://example.com/large.bin","destination":"","name":"large.bin"}`, "csrf", cookie)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized remote file returned %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "large.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversized download left a target file: %v", err)
+	}
+}
+
+func TestFilePermissionsUpdatesOwnershipModeAndChildren(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "folder")
+	if err := os.Mkdir(directory, 0755); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(directory, "child.txt")
+	if err := os.WriteFile(child, []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{
+		root: root, rootReal: root,
+		sessions: map[string]*sessionInfo{"session": {CSRF: "csrf", Expires: time.Now().Add(time.Hour), User: "admin"}},
+	}
+	body := fmt.Sprintf(`{"path":"folder","owner":%q,"group":%q,"mode":"0750","recursive":true}`, strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()))
+	response := authenticatedRequest(t, a.handleFilePermissions, http.MethodPost, body, "csrf", &http.Cookie{Name: "hostdesk_session", Value: "session"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("permission update failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, filename := range []string{directory, child} {
+		info, err := os.Stat(filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0750 {
+			t.Fatalf("unexpected mode for %s: %v", filename, info.Mode().Perm())
+		}
+	}
+}
+
 func TestAddToArchiveUsesSelectedNameAsRoot(t *testing.T) {
 	root := t.TempDir()
 	selected := filepath.Join(root, "site", "public")
@@ -994,13 +1091,69 @@ func TestExtractTarRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestExtractTarInheritsDestinationGroup(t *testing.T) {
+	destination := t.TempDir()
+	desiredGroup := -1
+	if os.Geteuid() == 0 {
+		desiredGroup = 65534
+	} else if groups, err := os.Getgroups(); err == nil {
+		for _, group := range groups {
+			if group != os.Getgid() {
+				desiredGroup = group
+				break
+			}
+		}
+	}
+	if desiredGroup < 0 {
+		t.Skip("no alternate group available for inheritance test")
+	}
+	if err := os.Chown(destination, -1, desiredGroup); err != nil {
+		t.Skipf("cannot set destination group: %v", err)
+	}
+	archive := filepath.Join(t.TempDir(), "content.tar")
+	file, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := tar.NewWriter(file)
+	if err := writer.WriteHeader(&tar.Header{Name: "nested/file.txt", Typeflag: tar.TypeReg, Mode: 0644, Size: 4}); err == nil {
+		_, err = writer.Write([]byte("test"))
+	}
+	if closeErr := writer.Close(); err == nil {
+		err = closeErr
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{extractMax: defaultExtractMax}
+	if err := a.extractTar(archive, destination, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, filename := range []string{filepath.Join(destination, "nested"), filepath.Join(destination, "nested", "file.txt")} {
+		info, err := os.Stat(filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ownership := ownershipFromInfo(info); ownership.GID != desiredGroup {
+			t.Fatalf("%s group=%d, want %d", filename, ownership.GID, desiredGroup)
+		}
+	}
+}
+
 func TestPrepareExtractPathRejectsExistingSymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareExtractPath(root, filepath.Join(root, "linked", "file.txt"), false); err == nil {
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareExtractPath(root, filepath.Join(root, "linked", "file.txt"), false, ownershipFromInfo(info)); err == nil {
 		t.Fatal("expected existing symlink to be rejected")
 	}
 }

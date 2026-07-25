@@ -21,12 +21,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	osuser "os/user"
 	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -61,6 +63,7 @@ type app struct {
 	secureCookie    bool
 	allowedSSH      map[string]bool
 	hostFingerprint string
+	remoteClient    *http.Client
 
 	mu              sync.Mutex
 	adminMu         sync.Mutex
@@ -88,6 +91,13 @@ type fileEntry struct {
 	Size     int64     `json:"size"`
 	Modified time.Time `json:"modified"`
 	Mode     string    `json:"mode"`
+	Owner    string    `json:"owner"`
+	Group    string    `json:"group"`
+}
+
+type fileOwnership struct {
+	UID int
+	GID int
 }
 
 type resolvedPath struct {
@@ -118,7 +128,10 @@ func main() {
 	mux.HandleFunc("POST /api/move", a.handleMove)
 	mux.HandleFunc("POST /api/copy", a.handleCopy)
 	mux.HandleFunc("POST /api/upload", a.handleUpload)
+	mux.HandleFunc("POST /api/remote-download", a.handleRemoteDownload)
 	mux.HandleFunc("GET /api/download", a.handleDownload)
+	mux.HandleFunc("GET /api/file-identities", a.handleFileIdentities)
+	mux.HandleFunc("POST /api/file-permissions", a.handleFilePermissions)
 	mux.HandleFunc("POST /api/archive", a.handleArchive)
 	mux.HandleFunc("POST /api/extract", a.handleExtract)
 	mux.HandleFunc("GET /api/admin/overview", a.handleAdminOverview)
@@ -251,6 +264,7 @@ func newApp() (*app, error) {
 		secureCookie:    envBool("COOKIE_SECURE", false),
 		allowedSSH:      allowed,
 		hostFingerprint: strings.TrimSpace(os.Getenv("SSH_HOST_KEY_SHA256")),
+		remoteClient:    remoteDownloadClient(),
 		sessions:        make(map[string]*sessionInfo),
 	}
 	if err := a.migrateLegacyFTPBindings(); err != nil {
@@ -530,6 +544,48 @@ func fileType(info fs.FileInfo) string {
 	return "file"
 }
 
+func identityFile(filename string) ([]string, map[uint32]string) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return []string{}, map[uint32]string{}
+	}
+	names := make([]string, 0)
+	byID := make(map[uint32]string)
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.Split(line, ":")
+		if len(parts) < 3 || parts[0] == "" {
+			continue
+		}
+		identifier, err := strconv.ParseUint(parts[2], 10, 32)
+		if err != nil {
+			continue
+		}
+		byID[uint32(identifier)] = parts[0]
+		if !seen[parts[0]] {
+			seen[parts[0]] = true
+			names = append(names, parts[0])
+		}
+	}
+	sort.Strings(names)
+	return names, byID
+}
+
+func ownershipFromInfo(info fs.FileInfo) fileOwnership {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fileOwnership{UID: -1, GID: -1}
+	}
+	return fileOwnership{UID: int(stat.Uid), GID: int(stat.Gid)}
+}
+
+func identityLabel(identifier int, names map[uint32]string) string {
+	if name := names[uint32(identifier)]; name != "" {
+		return name
+	}
+	return strconv.Itoa(identifier)
+}
+
 func (a *app) handleFiles(w http.ResponseWriter, r *http.Request) {
 	if a.authorize(w, r, false) == nil {
 		return
@@ -545,12 +601,15 @@ func (a *app) handleFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := make([]fileEntry, 0, len(entries))
+	_, usersByID := identityFile("/etc/passwd")
+	_, groupsByID := identityFile("/etc/group")
 	for _, entry := range entries {
 		info, err := os.Lstat(filepath.Join(target.Real, entry.Name()))
 		if err != nil {
 			continue
 		}
-		result = append(result, fileEntry{Name: entry.Name(), Path: path.Join(target.Relative, entry.Name()), Type: fileType(info), Size: info.Size(), Modified: info.ModTime(), Mode: fmt.Sprintf("%03o", info.Mode().Perm())})
+		ownership := ownershipFromInfo(info)
+		result = append(result, fileEntry{Name: entry.Name(), Path: path.Join(target.Relative, entry.Name()), Type: fileType(info), Size: info.Size(), Modified: info.ModTime(), Mode: fmt.Sprintf("%03o", info.Mode().Perm()), Owner: identityLabel(ownership.UID, usersByID), Group: identityLabel(ownership.GID, groupsByID)})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if (result[i].Type == "directory") != (result[j].Type == "directory") {
@@ -559,6 +618,120 @@ func (a *app) handleFiles(w http.ResponseWriter, r *http.Request) {
 		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"path": target.Relative, "entries": result})
+}
+
+func (a *app) handleFileIdentities(w http.ResponseWriter, r *http.Request) {
+	if a.authorize(w, r, false) == nil {
+		return
+	}
+	users, _ := identityFile("/etc/passwd")
+	groups, _ := identityFile("/etc/group")
+	writeJSON(w, http.StatusOK, map[string]any{"users": users, "groups": groups})
+}
+
+func identityID(value string, group bool) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return -1, nil
+	}
+	if identifier, err := strconv.Atoi(value); err == nil && identifier >= 0 {
+		return identifier, nil
+	}
+	var identifier string
+	if group {
+		entry, err := osuser.LookupGroup(value)
+		if err != nil {
+			return -1, &apiError{http.StatusBadRequest, "用户组不存在"}
+		}
+		identifier = entry.Gid
+	} else {
+		entry, err := osuser.Lookup(value)
+		if err != nil {
+			return -1, &apiError{http.StatusBadRequest, "用户不存在"}
+		}
+		identifier = entry.Uid
+	}
+	result, err := strconv.Atoi(identifier)
+	if err != nil || result < 0 {
+		return -1, &apiError{http.StatusBadRequest, "系统账号信息无效"}
+	}
+	return result, nil
+}
+
+func applyFilePermissions(filename string, info fs.FileInfo, ownership fileOwnership, mode fs.FileMode) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		if ownership.UID >= 0 || ownership.GID >= 0 {
+			return os.Lchown(filename, ownership.UID, ownership.GID)
+		}
+		return nil
+	}
+	if ownership.UID >= 0 || ownership.GID >= 0 {
+		if err := os.Chown(filename, ownership.UID, ownership.GID); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(filename, mode)
+}
+
+func (a *app) handleFilePermissions(w http.ResponseWriter, r *http.Request) {
+	if a.authorize(w, r, true) == nil {
+		return
+	}
+	var body struct {
+		Path      string `json:"path"`
+		Owner     string `json:"owner"`
+		Group     string `json:"group"`
+		Mode      string `json:"mode"`
+		Recursive bool   `json:"recursive"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	target, err := a.existing(body.Path)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	modeText := strings.TrimSpace(body.Mode)
+	if len(modeText) == 4 && modeText[0] == '0' {
+		modeText = modeText[1:]
+	}
+	if len(modeText) != 3 || strings.Trim(modeText, "01234567") != "" {
+		writeError(w, &apiError{http.StatusBadRequest, "权限模式必须是 000 到 777"})
+		return
+	}
+	modeValue, _ := strconv.ParseUint(modeText, 8, 32)
+	uid, err := identityID(body.Owner, false)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	gid, err := identityID(body.Group, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	apply := func(filename string, info fs.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return applyFilePermissions(filename, info, fileOwnership{UID: uid, GID: gid}, fs.FileMode(modeValue))
+	}
+	if body.Recursive {
+		err = filepath.Walk(target.Real, apply)
+	} else {
+		var info fs.FileInfo
+		info, err = os.Lstat(target.Real)
+		if err == nil {
+			err = apply(target.Real, info, nil)
+		}
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *app) handleReadFile(w http.ResponseWriter, r *http.Request) {
@@ -860,6 +1033,166 @@ func (a *app) handleUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
+func parseRemoteDownloadURL(value string) (*url.URL, error) {
+	if len(value) > 8192 {
+		return nil, &apiError{http.StatusBadRequest, "下载地址过长"}
+	}
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, &apiError{http.StatusBadRequest, "仅支持有效的 HTTP 或 HTTPS 地址"}
+	}
+	if parsed.User != nil {
+		return nil, &apiError{http.StatusBadRequest, "下载地址不能包含账号信息"}
+	}
+	return parsed, nil
+}
+
+func validDownloadName(value string) bool {
+	return value != "" && value != "." && value != ".." && len([]byte(value)) <= 255 &&
+		!strings.ContainsAny(value, "/\\\x00") && filepath.Base(value) == value
+}
+
+func remoteDownloadName(requested string, response *http.Response) (string, error) {
+	if requested = strings.TrimSpace(requested); requested != "" {
+		if !validDownloadName(requested) {
+			return "", &apiError{http.StatusBadRequest, "保存文件名无效"}
+		}
+		return requested, nil
+	}
+	candidates := make([]string, 0, 2)
+	if _, params, err := mime.ParseMediaType(response.Header.Get("Content-Disposition")); err == nil {
+		candidates = append(candidates, params["filename"])
+	}
+	if decoded, err := url.PathUnescape(path.Base(response.Request.URL.Path)); err == nil {
+		candidates = append(candidates, decoded)
+	}
+	for _, candidate := range candidates {
+		candidate = path.Base(strings.ReplaceAll(strings.TrimSpace(candidate), "\\", "/"))
+		if validDownloadName(candidate) {
+			return candidate, nil
+		}
+	}
+	return "download", nil
+}
+
+func remoteDownloadClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Minute,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return &apiError{http.StatusBadGateway, "远程下载重定向次数过多"}
+			}
+			_, err := parseRemoteDownloadURL(request.URL.String())
+			return err
+		},
+	}
+}
+
+func (a *app) handleRemoteDownload(w http.ResponseWriter, r *http.Request) {
+	if a.authorize(w, r, true) == nil {
+		return
+	}
+	var body struct {
+		URL         string `json:"url"`
+		Destination string `json:"destination"`
+		Name        string `json:"name"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	remoteURL, err := parseRemoteDownloadURL(body.URL)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	destination, err := a.existing(body.Destination)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	info, err := os.Stat(destination.Real)
+	if err != nil || !info.IsDir() {
+		writeError(w, &apiError{http.StatusBadRequest, "下载目标不是目录"})
+		return
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, remoteURL.String(), nil)
+	if err != nil {
+		writeError(w, &apiError{http.StatusBadRequest, "下载地址无效"})
+		return
+	}
+	request.Header.Set("User-Agent", "HostDesk/"+version)
+	client := a.remoteClient
+	if client == nil {
+		client = remoteDownloadClient()
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		writeError(w, &apiError{http.StatusBadGateway, "无法连接远程下载地址"})
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		writeError(w, &apiError{http.StatusBadGateway, fmt.Sprintf("远程服务器返回 HTTP %d", response.StatusCode)})
+		return
+	}
+	name, err := remoteDownloadName(body.Name, response)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	target := filepath.Join(destination.Real, name)
+	if _, err := os.Lstat(target); err == nil {
+		writeError(w, os.ErrExist)
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeError(w, err)
+		return
+	}
+	limit := a.uploadMax
+	if limit <= 0 {
+		limit = defaultUploadMax
+	}
+	if response.ContentLength > limit {
+		writeError(w, &apiError{http.StatusRequestEntityTooLarge, "远程文件超过下载大小限制"})
+		return
+	}
+	temp, err := os.CreateTemp(destination.Real, ".hostdesk-download-*.tmp")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	written, copyErr := io.Copy(temp, io.LimitReader(response.Body, limit+1))
+	closeErr := temp.Close()
+	if copyErr != nil {
+		writeError(w, &apiError{http.StatusBadGateway, "远程下载中断"})
+		return
+	}
+	if closeErr != nil {
+		writeError(w, closeErr)
+		return
+	}
+	if written > limit {
+		writeError(w, &apiError{http.StatusRequestEntityTooLarge, "远程文件超过下载大小限制"})
+		return
+	}
+	if err := os.Link(tempName, target); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "name": name, "path": path.Join(destination.Relative, name), "size": written})
+}
+
 func (a *app) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if a.authorize(w, r, false) == nil {
 		return
@@ -1028,7 +1361,7 @@ func extractTarget(destination, name string) (string, error) {
 	return target, nil
 }
 
-func prepareExtractPath(destination, target string, directory bool) error {
+func prepareExtractPath(destination, target string, directory bool, ownership fileOwnership) error {
 	relative, err := filepath.Rel(destination, target)
 	if err != nil {
 		return err
@@ -1054,6 +1387,9 @@ func prepareExtractPath(destination, target string, directory bool) error {
 		if err := os.Mkdir(current, 0755); err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}
+		if err := os.Chown(current, ownership.UID, ownership.GID); err != nil {
+			return err
+		}
 	}
 	if !directory {
 		if info, statErr := os.Lstat(target); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
@@ -1063,6 +1399,21 @@ func prepareExtractPath(destination, target string, directory bool) error {
 		}
 	}
 	return nil
+}
+
+func extractOwnership(destination string) (fileOwnership, error) {
+	info, err := os.Stat(destination)
+	if err != nil {
+		return fileOwnership{}, err
+	}
+	return ownershipFromInfo(info), nil
+}
+
+func applyExtractMetadata(target string, mode fs.FileMode, ownership fileOwnership) error {
+	if err := os.Chown(target, ownership.UID, ownership.GID); err != nil {
+		return err
+	}
+	return os.Chmod(target, mode)
 }
 
 func safeFileMode(mode fs.FileMode, directory bool) fs.FileMode {
@@ -1081,6 +1432,10 @@ func safeFileMode(mode fs.FileMode, directory bool) fs.FileMode {
 }
 
 func (a *app) extractZip(archive, destination string) error {
+	ownership, err := extractOwnership(destination)
+	if err != nil {
+		return err
+	}
 	reader, err := zip.OpenReader(archive)
 	if err != nil {
 		return &apiError{http.StatusBadRequest, "ZIP 文件损坏"}
@@ -1105,13 +1460,15 @@ func (a *app) extractZip(archive, destination string) error {
 	for _, item := range reader.File {
 		target, _ := extractTarget(destination, item.Name)
 		if item.FileInfo().IsDir() {
-			if err := prepareExtractPath(destination, target, true); err != nil {
+			if err := prepareExtractPath(destination, target, true, ownership); err != nil {
 				return err
 			}
-			_ = os.Chmod(target, safeFileMode(item.Mode().Perm(), true))
+			if err := applyExtractMetadata(target, safeFileMode(item.Mode().Perm(), true), ownership); err != nil {
+				return err
+			}
 			continue
 		}
-		if err := prepareExtractPath(destination, target, false); err != nil {
+		if err := prepareExtractPath(destination, target, false, ownership); err != nil {
 			return err
 		}
 		input, err := item.Open()
@@ -1131,11 +1488,18 @@ func (a *app) extractZip(archive, destination string) error {
 		if err != nil {
 			return err
 		}
+		if err := applyExtractMetadata(target, safeFileMode(item.Mode().Perm(), false), ownership); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (a *app) extractTar(archive, destination string, compressed bool) error {
+	ownership, err := extractOwnership(destination)
+	if err != nil {
+		return err
+	}
 	file, err := os.Open(archive)
 	if err != nil {
 		return err
@@ -1177,13 +1541,15 @@ func (a *app) extractTar(archive, destination string, compressed bool) error {
 			return err
 		}
 		if header.Typeflag == tar.TypeDir {
-			if err := prepareExtractPath(destination, target, true); err != nil {
+			if err := prepareExtractPath(destination, target, true, ownership); err != nil {
 				return err
 			}
-			_ = os.Chmod(target, safeFileMode(fs.FileMode(header.Mode), true))
+			if err := applyExtractMetadata(target, safeFileMode(fs.FileMode(header.Mode), true), ownership); err != nil {
+				return err
+			}
 			continue
 		}
-		if err := prepareExtractPath(destination, target, false); err != nil {
+		if err := prepareExtractPath(destination, target, false, ownership); err != nil {
 			return err
 		}
 		output, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, safeFileMode(fs.FileMode(header.Mode), false))
@@ -1197,6 +1563,9 @@ func (a *app) extractTar(archive, destination string, compressed bool) error {
 		}
 		if closeErr != nil {
 			return closeErr
+		}
+		if err := applyExtractMetadata(target, safeFileMode(fs.FileMode(header.Mode), false), ownership); err != nil {
+			return err
 		}
 	}
 	return nil
