@@ -960,17 +960,18 @@ func TestRemoteDownloadSavesFileAndUsesResponseName(t *testing.T) {
 	}
 }
 
-func TestRemoteDownloadRejectsInvalidURLAndOversizedFile(t *testing.T) {
+func TestRemoteDownloadRejectsInvalidURLAndIgnoresUploadLimit(t *testing.T) {
 	root := t.TempDir()
 	a := &app{
 		root: root, rootReal: root, uploadMax: 4,
 		sessions: map[string]*sessionInfo{"session": {CSRF: "csrf", Expires: time.Now().Add(time.Hour), User: "admin"}},
 		remoteClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader("too large")),
-				Request:    request,
+				StatusCode:    http.StatusOK,
+				Header:        make(http.Header),
+				Body:          io.NopCloser(strings.NewReader("larger than upload limit")),
+				ContentLength: int64(len("larger than upload limit")),
+				Request:       request,
 			}, nil
 		})},
 	}
@@ -982,11 +983,12 @@ func TestRemoteDownloadRejectsInvalidURLAndOversizedFile(t *testing.T) {
 	}
 	response = authenticatedRequest(t, a.handleRemoteDownload, http.MethodPost,
 		`{"url":"https://example.com/large.bin","destination":"","name":"large.bin"}`, "csrf", cookie)
-	if response.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized remote file returned %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusCreated {
+		t.Fatalf("remote file above upload limit returned %d: %s", response.Code, response.Body.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, "large.bin")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("oversized download left a target file: %v", err)
+	data, err := os.ReadFile(filepath.Join(root, "large.bin"))
+	if err != nil || string(data) != "larger than upload limit" {
+		t.Fatalf("unexpected unlimited remote download: %q, %v", data, err)
 	}
 }
 

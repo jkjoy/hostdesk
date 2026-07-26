@@ -1085,7 +1085,6 @@ func remoteDownloadClient() *http.Client {
 	}
 	return &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Minute,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return &apiError{http.StatusBadGateway, "远程下载重定向次数过多"}
@@ -1157,14 +1156,6 @@ func (a *app) handleRemoteDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	limit := a.uploadMax
-	if limit <= 0 {
-		limit = defaultUploadMax
-	}
-	if response.ContentLength > limit {
-		writeError(w, &apiError{http.StatusRequestEntityTooLarge, "远程文件超过下载大小限制"})
-		return
-	}
 	temp, err := os.CreateTemp(destination.Real, ".hostdesk-download-*.tmp")
 	if err != nil {
 		writeError(w, err)
@@ -1172,7 +1163,7 @@ func (a *app) handleRemoteDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	tempName := temp.Name()
 	defer os.Remove(tempName)
-	written, copyErr := io.Copy(temp, io.LimitReader(response.Body, limit+1))
+	written, copyErr := io.Copy(temp, response.Body)
 	closeErr := temp.Close()
 	if copyErr != nil {
 		writeError(w, &apiError{http.StatusBadGateway, "远程下载中断"})
@@ -1180,10 +1171,6 @@ func (a *app) handleRemoteDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	if closeErr != nil {
 		writeError(w, closeErr)
-		return
-	}
-	if written > limit {
-		writeError(w, &apiError{http.StatusRequestEntityTooLarge, "远程文件超过下载大小限制"})
 		return
 	}
 	if err := os.Link(tempName, target); err != nil {
