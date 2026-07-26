@@ -162,7 +162,7 @@ function init() {
     scrollback: 5000,
     theme: {
       background: "#151918", foreground: "#d9e1de", cursor: "#49c99a", cursorAccent: "#151918",
-      selectionBackground: "#315f50", black: ansiColors[0], red: ansiColors[1], green: ansiColors[2],
+      selectionBackground: "#315f50", selectionForeground: "#ffffff", black: ansiColors[0], red: ansiColors[1], green: ansiColors[2],
       yellow: ansiColors[3], blue: ansiColors[4], magenta: ansiColors[5], cyan: ansiColors[6], white: ansiColors[7],
       brightBlack: ansiColors[8], brightRed: ansiColors[9], brightGreen: ansiColors[10], brightYellow: ansiColors[11],
       brightBlue: ansiColors[12], brightMagenta: ansiColors[13], brightCyan: ansiColors[14], brightWhite: ansiColors[15],
@@ -305,8 +305,8 @@ onBeforeUnmount(() => {
           <button class="icon-button dark" type="button" title="清屏" @click="terminal?.clear()"><Eraser :size="16" /></button>
         </div>
       </div>
-      <div class="terminal-stage" @contextmenu.prevent="openContextMenu">
-        <div ref="container" class="terminal" role="application" aria-label="本机终端" @pointerdown="terminal?.focus()"></div>
+      <div class="terminal-stage">
+        <div ref="container" class="terminal" role="application" aria-label="本机终端" @pointerdown="terminal?.focus()" @contextmenu.stop.prevent="openContextMenu"></div>
       </div>
     </div>
     <Teleport to="body"><div v-if="contextMenu" ref="contextMenuElement" class="terminal-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" role="menu" @click.stop @contextmenu.prevent>
