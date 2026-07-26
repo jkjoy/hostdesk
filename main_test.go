@@ -167,6 +167,46 @@ func TestClientIPOnlyTrustsLoopbackProxy(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONRejectsTrailingData(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/login", strings.NewReader(`{"username":"owner"}{"password":"extra"}`))
+	response := httptest.NewRecorder()
+	var body struct {
+		Username string `json:"username"`
+	}
+	err := decodeJSON(response, request, &body)
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest {
+		t.Fatalf("trailing JSON returned %v", err)
+	}
+}
+
+func TestTerminalOriginRequiresExactHost(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin string
+		want   bool
+	}{
+		{name: "exact HTTP origin", origin: "http://panel.example:8787", want: true},
+		{name: "exact HTTPS origin", origin: "https://panel.example:8787", want: true},
+		{name: "missing origin", origin: "", want: false},
+		{name: "host prefix attack", origin: "https://panel.example:8787.evil.example", want: false},
+		{name: "different host", origin: "https://evil.example", want: false},
+		{name: "unsupported scheme", origin: "file://panel.example:8787", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://panel.example:8787/ws/terminal", nil)
+			request.Host = "panel.example:8787"
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if got := terminalOriginAllowed(request); got != test.want {
+				t.Fatalf("terminalOriginAllowed() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSPAHandlerServesFrontendRoutesOnly(t *testing.T) {
 	handler := spaHandler([]byte("<main>HostDesk</main>"), http.NotFoundHandler())
 	for _, requestPath := range []string{"/", "/sites", "/certificates", "/server-settings", "/files?path=var/www"} {
@@ -187,6 +227,22 @@ func TestSPAHandlerServesFrontendRoutesOnly(t *testing.T) {
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("non-SPA path %s returned status %d", requestPath, response.Code)
 		}
+	}
+}
+
+func TestSecurityHeadersProtectHTTPSAPIResponses(t *testing.T) {
+	handler := securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodGet, "http://panel.example/api/session", nil)
+	request.Header.Set("X-Forwarded-Proto", "https")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if got := response.Header().Get("Strict-Transport-Security"); got != "max-age=31536000" {
+		t.Fatalf("Strict-Transport-Security = %q", got)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q", got)
 	}
 }
 
@@ -257,6 +313,39 @@ func TestLocalTerminalWebSocket(t *testing.T) {
 	}
 	if !commandSent {
 		t.Fatal("terminal never became ready")
+	}
+}
+
+func TestSSHWebSocketRequiresCSRF(t *testing.T) {
+	a := &app{
+		sessions:   map[string]*sessionInfo{"ssh-test": {CSRF: "expected-csrf", Expires: time.Now().Add(time.Minute), User: "admin"}},
+		allowedSSH: map[string]bool{"127.0.0.1": true},
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback sockets unavailable: %v", err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(a.handleSSH))
+	server.Listener = listener
+	server.Start()
+	defer server.Close()
+	header := http.Header{}
+	header.Set("Cookie", (&http.Cookie{Name: "hostdesk_session", Value: "ssh-test"}).String())
+	header.Set("Origin", server.URL)
+	connection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := connection.WriteJSON(sshMessage{Type: "connect", CSRF: "wrong-csrf", Host: "127.0.0.1", Port: 22, Username: "root"}); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]string
+	if err := connection.ReadJSON(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response["type"] != "error" {
+		t.Fatalf("invalid CSRF response = %#v", response)
 	}
 }
 
@@ -846,6 +935,16 @@ func TestFTPConfigurationAndValidation(t *testing.T) {
 	}
 	if _, err := resolveFTPSite(sites, "proxy"); err == nil {
 		t.Fatal("proxy site was accepted as an FTP root")
+	}
+}
+
+func TestDockerComponentCanBeInstalledAndManaged(t *testing.T) {
+	definition, ok := components()["docker"]
+	if !ok || definition.Service != "docker" || !slices.Contains(definition.Packages, "docker") {
+		t.Fatalf("Docker component definition invalid: %+v", definition)
+	}
+	if !allowedService("docker") {
+		t.Fatal("Docker service is not available to the service controller")
 	}
 }
 

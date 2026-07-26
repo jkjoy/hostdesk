@@ -290,8 +290,9 @@ func components() map[string]componentDefinition {
 			Packages: phpPackages(php),
 			Service:  phpService(php),
 		},
-		"mysql": {Packages: []string{"mariadb", "mariadb-client"}, Service: "mariadb"},
-		"ftp":   {Packages: []string{"vsftpd"}, Service: "vsftpd"},
+		"mysql":  {Packages: []string{"mariadb", "mariadb-client"}, Service: "mariadb"},
+		"ftp":    {Packages: []string{"vsftpd"}, Service: "vsftpd"},
+		"docker": {Packages: []string{"docker"}, Service: "docker"},
 	}
 }
 
@@ -386,6 +387,8 @@ func componentStatus(name string, definition componentDefinition) serviceStatus 
 		status.Version = commandVersion("mariadb", "--version")
 	case "ftp":
 		status.Version = commandVersion("vsftpd", "-v")
+	case "docker":
+		status.Version = commandVersion("docker", "--version")
 	}
 	return status
 }
@@ -439,6 +442,8 @@ func (a *app) handleComponentInstall(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				_, err = runAdmin(time.Minute, "rc-service", definition.Service, "start")
 			}
+		case "docker":
+			_, err = runAdmin(2*time.Minute, "rc-service", definition.Service, "start")
 		}
 	}
 	if err != nil {

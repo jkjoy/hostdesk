@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -212,6 +213,8 @@ func (a *app) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "管理员账号已经初始化"})
 		return
 	}
+	clearDeadline := limitRequestReadTime(w, authRequestTimeout)
+	defer clearDeadline()
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -262,6 +265,7 @@ func (a *app) handleSetup(w http.ResponseWriter, r *http.Request) {
 	a.sessions[id] = session
 	a.mu.Unlock()
 	a.setSessionCookie(w, id)
+	log.Printf("security administrator_initialized ip=%q", requestClientIP(r))
 	writeJSON(w, http.StatusCreated, map[string]string{"csrf": session.CSRF, "user": session.User, "fileRoot": a.rootReal})
 }
 

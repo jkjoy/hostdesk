@@ -40,11 +40,12 @@ import (
 var embeddedFiles embed.FS
 
 const (
-	sessionTTL        = 12 * time.Hour
-	maxEditorBytes    = 4 << 20
-	maxJSONBytes      = 6 << 20
-	defaultUploadMax  = 256 << 20
-	defaultExtractMax = int64(2 << 30)
+	sessionTTL         = 12 * time.Hour
+	authRequestTimeout = 15 * time.Second
+	maxEditorBytes     = 4 << 20
+	maxJSONBytes       = 6 << 20
+	defaultUploadMax   = 256 << 20
+	defaultExtractMax  = int64(2 << 30)
 )
 
 type sessionInfo struct {
@@ -323,6 +324,12 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:")
+		if r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -356,9 +363,24 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return &apiError{http.StatusRequestTimeout, "请求读取超时"}
+		}
+		return &apiError{http.StatusBadRequest, "请求格式错误"}
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return &apiError{http.StatusBadRequest, "请求格式错误"}
 	}
 	return nil
+}
+
+func limitRequestReadTime(w http.ResponseWriter, duration time.Duration) func() {
+	controller := http.NewResponseController(w)
+	if err := controller.SetReadDeadline(time.Now().Add(duration)); err != nil {
+		return func() {}
+	}
+	return func() { _ = controller.SetReadDeadline(time.Time{}) }
 }
 
 func (a *app) session(r *http.Request) (*sessionInfo, string) {
@@ -391,6 +413,8 @@ func (a *app) authorize(w http.ResponseWriter, r *http.Request, mutation bool) *
 }
 
 func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
+	clearDeadline := limitRequestReadTime(w, authRequestTimeout)
+	defer clearDeadline()
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -409,14 +433,16 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	clientIP := requestClientIP(r)
 	validUser := subtle.ConstantTimeCompare([]byte(body.Username), []byte(administrator.Username)) == 1
-	identities := loginProtectionIdentities(requestClientIP(r), administrator.Username, validUser)
+	identities := loginProtectionIdentities(clientIP, administrator.Username, validUser)
 	remaining, err := a.loginLockRemaining(identities, now)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	if remaining > 0 {
+		log.Printf("security login_rate_limited ip=%q", clientIP)
 		w.Header().Set("Retry-After", strconv.Itoa(int((remaining+time.Second-1)/time.Second)))
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "登录尝试过多，请稍后再试"})
 		return
@@ -432,6 +458,7 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		log.Printf("security login_failed ip=%q username_valid=%t", clientIP, validUser)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "账号或密码错误"})
 		return
 	}
@@ -445,6 +472,7 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {
 	a.sessions[id] = session
 	a.mu.Unlock()
 	a.setSessionCookie(w, id)
+	log.Printf("security login_success ip=%q", clientIP)
 	writeJSON(w, http.StatusOK, map[string]string{"csrf": session.CSRF, "user": session.User, "fileRoot": a.rootReal})
 }
 
@@ -1605,6 +1633,7 @@ func (a *app) handleExtract(w http.ResponseWriter, r *http.Request) {
 
 type sshMessage struct {
 	Type       string `json:"type"`
+	CSRF       string `json:"csrf"`
 	Host       string `json:"host"`
 	Port       int    `json:"port"`
 	Username   string `json:"username"`
@@ -1636,16 +1665,14 @@ func isLoopbackHost(host string) bool {
 }
 
 func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
-	if a.authorize(w, r, false) == nil {
+	authSession := a.authorize(w, r, false)
+	if authSession == nil {
 		return
 	}
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
-		CheckOrigin: func(request *http.Request) bool {
-			origin := request.Header.Get("Origin")
-			return origin == "" || strings.Contains(origin, "://"+request.Host)
-		},
+		CheckOrigin:     terminalOriginAllowed,
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1653,13 +1680,15 @@ func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	conn.SetReadLimit(2 << 20)
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	writer := &wsWriter{conn: conn}
 
 	var connect sshMessage
-	if err := conn.ReadJSON(&connect); err != nil || connect.Type != "connect" {
+	if err := conn.ReadJSON(&connect); err != nil || connect.Type != "connect" || subtle.ConstantTimeCompare([]byte(connect.CSRF), []byte(authSession.CSRF)) != 1 {
 		_ = writer.send(map[string]string{"type": "error", "message": "无效连接请求"})
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 	connect.Host = strings.TrimSpace(connect.Host)
 	connect.Username = strings.TrimSpace(connect.Username)
 	if connect.Port == 0 {
@@ -1712,21 +1741,21 @@ func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer client.Close()
-	session, err := client.NewSession()
+	sshSession, err := client.NewSession()
 	if err != nil {
 		_ = writer.send(map[string]string{"type": "error", "message": err.Error()})
 		return
 	}
-	defer session.Close()
-	stdin, _ := session.StdinPipe()
-	stdout, _ := session.StdoutPipe()
-	stderr, _ := session.StderrPipe()
+	defer sshSession.Close()
+	stdin, _ := sshSession.StdinPipe()
+	stdout, _ := sshSession.StdoutPipe()
+	stderr, _ := sshSession.StderrPipe()
 	rows, cols := terminalSize(connect.Rows, connect.Cols)
-	if err := session.RequestPty("xterm-256color", rows, cols, ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}); err != nil {
+	if err := sshSession.RequestPty("xterm-256color", rows, cols, ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}); err != nil {
 		_ = writer.send(map[string]string{"type": "error", "message": err.Error()})
 		return
 	}
-	if err := session.Shell(); err != nil {
+	if err := sshSession.Shell(); err != nil {
 		_ = writer.send(map[string]string{"type": "error", "message": err.Error()})
 		return
 	}
@@ -1753,7 +1782,7 @@ func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
 	go stream(stdout)
 	go stream(stderr)
 	go func() {
-		_ = session.Wait()
+		_ = sshSession.Wait()
 		_ = writer.send(map[string]string{"type": "close"})
 		closeDone()
 	}()
@@ -1769,7 +1798,7 @@ func (a *app) handleSSH(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.WriteString(stdin, message.Data)
 			case "resize":
 				if message.Rows > 0 && message.Cols > 0 && message.Rows < 1000 && message.Cols < 1000 {
-					_ = session.WindowChange(message.Rows, message.Cols)
+					_ = sshSession.WindowChange(message.Rows, message.Cols)
 				}
 			}
 		}

@@ -370,7 +370,6 @@ onBeforeUnmount(() => {
           <span>创建并进入</span>
         </button>
       </form>
-      <footer>本机 SQLite 凭据存储</footer>
     </section>
   </main>
 
