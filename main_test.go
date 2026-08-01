@@ -902,9 +902,15 @@ func TestUpdateAssetVerification(t *testing.T) {
 
 func TestFTPConfigurationAndValidation(t *testing.T) {
 	config := renderVSFTPDConfig()
-	for _, directive := range []string{"anonymous_enable=NO", "local_enable=YES", "write_enable=YES", "local_umask=002", "chroot_local_user=YES", "local_root=/srv/ftp/$USER", "user_config_dir=/etc/vsftpd/users", "pasv_min_port=40000", "pasv_max_port=40100"} {
+	for _, directive := range []string{"anonymous_enable=NO", "local_enable=YES", "write_enable=YES", "local_umask=002", "chroot_local_user=YES", "seccomp_sandbox=NO", "local_root=/srv/ftp/$USER", "user_config_dir=/etc/vsftpd/users", "pasv_min_port=40000", "pasv_max_port=40100"} {
 		if !strings.Contains(config, directive) {
 			t.Fatalf("vsftpd configuration missing %q", directive)
+		}
+	}
+	pamConfig := renderVSFTPDPAMConfig()
+	for _, directive := range []string{"auth requisite pam_succeed_if.so user ingroup hostdesk-ftp", "auth include base-auth", "account include base-account", "session include base-session-noninteractive"} {
+		if !strings.Contains(pamConfig, directive) {
+			t.Fatalf("vsftpd PAM configuration missing %q", directive)
 		}
 	}
 	if !ftpUsernamePattern.MatchString("ftp_user-1") || ftpUsernamePattern.MatchString("Root") {

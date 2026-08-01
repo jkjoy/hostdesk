@@ -16,6 +16,7 @@ const (
 	ftpGroup         = "hostdesk-ftp"
 	ftpRoot          = "/srv/ftp"
 	vsftpdConfig     = "/etc/vsftpd/vsftpd.conf"
+	vsftpdPAMConfig  = "/etc/pam.d/vsftpd"
 	vsftpdUserConfig = "/etc/vsftpd/users"
 )
 
@@ -49,6 +50,7 @@ connect_from_port_20=YES
 chroot_local_user=YES
 allow_writeable_chroot=YES
 check_shell=NO
+seccomp_sandbox=NO
 secure_chroot_dir=/var/empty
 pam_service_name=vsftpd
 user_sub_token=$USER
@@ -60,6 +62,15 @@ pasv_max_port=40100
 `
 }
 
+func renderVSFTPDPAMConfig() string {
+	return `#%PAM-1.0
+auth requisite pam_succeed_if.so user ingroup hostdesk-ftp
+auth include base-auth
+account include base-account
+session include base-session-noninteractive
+`
+}
+
 func ensureVSFTPDConfig() error {
 	if err := os.MkdirAll(ftpRoot, 0755); err != nil {
 		return err
@@ -68,6 +79,12 @@ func ensureVSFTPDConfig() error {
 		return err
 	}
 	if err := os.MkdirAll("/var/empty", 0555); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(vsftpdPAMConfig), 0755); err != nil {
+		return err
+	}
+	if err := writeAtomic(vsftpdPAMConfig, []byte(renderVSFTPDPAMConfig()), 0644); err != nil {
 		return err
 	}
 	config := []byte(renderVSFTPDConfig())
