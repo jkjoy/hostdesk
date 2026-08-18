@@ -9,7 +9,7 @@ import PageHeader from "../components/PageHeader.vue";
 
 interface Site {
   id: string; domain: string; aliases: string[]; type: string; root: string; upstream: string;
-  rewriteMode?: string; rewriteRules?: string; enabled: boolean; ssl: boolean;
+  runDirectory?: string; rewriteMode?: string; rewriteRules?: string; enabled: boolean; ssl: boolean;
   certificateMode?: "managed" | "custom"; certificateId?: string; certificateConfigured: boolean;
 }
 interface CertificateOption { id: string; domains: string[]; expiresAt: string }
@@ -28,7 +28,7 @@ const nginxConfigPath = ref("");
 const nginxCustomized = ref(false);
 const nginxLoading = ref(false);
 const form = reactive({
-  domain: "", aliases: "", type: "static", root: "", upstream: "", rewriteMode: "laravel", rewriteRules: "",
+  domain: "", aliases: "", type: "static", root: "", runDirectory: "", upstream: "", rewriteMode: "laravel", rewriteRules: "",
   ssl: false, certificateMode: "managed" as "managed" | "custom", certificateId: "", certificatePem: "", privateKeyPem: "",
 });
 const customCertificateRequired = computed(() => form.ssl && form.certificateMode === "custom" && !(editing.value?.certificateMode === "custom" && editing.value.certificateConfigured));
@@ -51,10 +51,11 @@ function open(site?: Site) {
   const defaultMode = site?.certificateMode || (certificates.value.length ? "managed" : "custom");
   Object.assign(form, site ? {
     domain: site.domain, aliases: site.aliases.join(", "), type: site.type, root: site.root, upstream: site.upstream,
+    runDirectory: site.runDirectory || "",
     rewriteMode: site.rewriteMode || "laravel", rewriteRules: site.rewriteRules || "", ssl: site.ssl,
     certificateMode: defaultMode, certificateId: site.certificateId || certificates.value[0]?.id || "", certificatePem: "", privateKeyPem: "",
   } : {
-    domain: "", aliases: "", type: "static", root: "", upstream: "", rewriteMode: "laravel", rewriteRules: "", ssl: false,
+    domain: "", aliases: "", type: "static", root: "", runDirectory: "", upstream: "", rewriteMode: "laravel", rewriteRules: "", ssl: false,
     certificateMode: defaultMode, certificateId: certificates.value[0]?.id || "", certificatePem: "", privateKeyPem: "",
   });
   modal.value = true;
@@ -68,6 +69,7 @@ async function save() {
       aliases: form.aliases.split(",").map(value => value.trim()).filter(Boolean),
       type: form.type,
       root: form.root,
+      runDirectory: form.type === "php" ? form.runDirectory : "",
       upstream: form.upstream,
       rewriteMode: form.rewriteMode,
       rewriteRules: form.rewriteRules,
@@ -159,12 +161,16 @@ async function resetNginx() {
 
 function openFiles(site: Site) { emit("openFiles", site.root); }
 function siteURL(site: Site) { return `${site.ssl ? "https" : "http"}://${site.domain}`; }
+function siteDocumentRoot(site: Site) {
+  if (site.type !== "php" || !site.runDirectory) return site.root;
+  return `${site.root.replace(/\/+$/, "")}/${site.runDirectory.replace(/^\/+/, "")}`;
+}
 onMounted(load);
 </script>
 
 <template>
   <PageHeader title="网站管理" subtitle="Nginx 虚拟主机与网站目录" kicker="SITES"><button class="button primary" @click="open()"><Plus :size="16" />添加网站</button></PageHeader>
-  <div class="data-surface"><div class="table-scroll"><table class="data-table"><thead><tr><th>域名</th><th>类型</th><th>目录 / 上游</th><th>HTTPS</th><th>状态</th><th class="actions-column">操作</th></tr></thead><tbody><tr v-for="site in sites" :key="site.id"><td><a class="site-domain-link" :href="siteURL(site)" target="_blank" rel="noopener noreferrer" :title="`新窗口打开 ${site.domain}`"><strong>{{ site.domain }}</strong><ExternalLink :size="13" /></a><small v-if="site.aliases.length">{{ site.aliases.join(', ') }}</small></td><td>{{ { static: '静态', php: 'PHP', proxy: '反代' }[site.type] || site.type }}</td><td class="truncate-cell" :title="site.type === 'proxy' ? site.upstream : site.root">{{ site.type === 'proxy' ? site.upstream : site.root }}</td><td>{{ site.ssl ? '已启用' : 'HTTP' }}</td><td><span class="status-pill" :class="{ running: site.enabled, stopped: !site.enabled }">{{ site.enabled ? '启用' : '停用' }}</span></td><td><div class="row-actions"><button v-if="site.type !== 'proxy'" class="icon-button" title="打开网站文件" aria-label="打开网站文件" @click="openFiles(site)"><FolderOpen :size="16" /></button><button class="icon-button" title="编辑 Nginx 配置" @click="openNginx(site)"><FileCode2 :size="16" /></button><button class="icon-button" title="网站设置" @click="open(site)"><Settings2 :size="16" /></button><button class="icon-button" :title="site.enabled ? '停用' : '启用'" @click="toggle(site)"><Pause v-if="site.enabled" :size="16" /><Play v-else :size="16" /></button><button class="icon-button danger" title="删除" @click="remove(site)"><Trash2 :size="16" /></button></div></td></tr></tbody></table></div><EmptyState v-if="!loading && !sites.length" message="还没有网站" /></div>
+  <div class="data-surface"><div class="table-scroll"><table class="data-table"><thead><tr><th>域名</th><th>类型</th><th>目录 / 上游</th><th>HTTPS</th><th>状态</th><th class="actions-column">操作</th></tr></thead><tbody><tr v-for="site in sites" :key="site.id"><td><a class="site-domain-link" :href="siteURL(site)" target="_blank" rel="noopener noreferrer" :title="`新窗口打开 ${site.domain}`"><strong>{{ site.domain }}</strong><ExternalLink :size="13" /></a><small v-if="site.aliases.length">{{ site.aliases.join(', ') }}</small></td><td>{{ { static: '静态', php: 'PHP', proxy: '反代' }[site.type] || site.type }}</td><td class="truncate-cell" :title="site.type === 'proxy' ? site.upstream : siteDocumentRoot(site)">{{ site.type === 'proxy' ? site.upstream : siteDocumentRoot(site) }}<small v-if="site.type === 'php' && site.runDirectory">项目：{{ site.root }}</small></td><td>{{ site.ssl ? '已启用' : 'HTTP' }}</td><td><span class="status-pill" :class="{ running: site.enabled, stopped: !site.enabled }">{{ site.enabled ? '启用' : '停用' }}</span></td><td><div class="row-actions"><button v-if="site.type !== 'proxy'" class="icon-button" title="打开网站文件" aria-label="打开网站文件" @click="openFiles(site)"><FolderOpen :size="16" /></button><button class="icon-button" title="编辑 Nginx 配置" @click="openNginx(site)"><FileCode2 :size="16" /></button><button class="icon-button" title="网站设置" @click="open(site)"><Settings2 :size="16" /></button><button class="icon-button" :title="site.enabled ? '停用' : '启用'" @click="toggle(site)"><Pause v-if="site.enabled" :size="16" /><Play v-else :size="16" /></button><button class="icon-button danger" title="删除" @click="remove(site)"><Trash2 :size="16" /></button></div></td></tr></tbody></table></div><EmptyState v-if="!loading && !sites.length" message="还没有网站" /></div>
   <AppModal v-if="modal" :title="editing ? `修改 ${editing.domain}` : '添加网站'" wide :busy="loading" :submit-label="editing ? '保存配置' : '创建网站'" @close="modal = false" @submit="save">
     <div class="form-grid">
       <label class="field">主域名<input v-model="form.domain" :disabled="!!editing" placeholder="example.com" required></label>
@@ -172,6 +178,7 @@ onMounted(load);
       <label class="field">网站类型<select v-model="form.type"><option value="static">静态网站</option><option value="php">PHP 网站</option><option value="proxy">反向代理</option></select></label>
       <label v-if="form.type !== 'proxy'" class="field">网站目录<input v-model="form.root" placeholder="自动生成到 /var/www"></label>
       <label v-else class="field">上游地址<input v-model="form.upstream" placeholder="http://127.0.0.1:3000"></label>
+      <label v-if="form.type === 'php'" class="field">运行目录（相对于网站目录）<input v-model="form.runDirectory" placeholder="public"></label>
       <label v-if="form.type === 'php'" class="field">伪静态<select v-model="form.rewriteMode"><option value="none">关闭</option><option value="wordpress">WordPress</option><option value="laravel">通用 PHP / Laravel</option><option value="thinkphp">ThinkPHP</option><option value="custom">自定义</option></select></label>
       <label v-if="form.type === 'php' && form.rewriteMode === 'custom'" class="field full">自定义规则<textarea v-model="form.rewriteRules" rows="5" spellcheck="false"></textarea></label>
       <label class="check-field full"><input v-model="form.ssl" type="checkbox">启用 HTTPS</label>

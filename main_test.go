@@ -395,8 +395,11 @@ func TestPHPPackagesByVersion(t *testing.T) {
 	if slices.Contains(php85, "php85-opcache") {
 		t.Fatal("PHP 8.5 OPcache is built in and must not be installed as a package")
 	}
-	if !slices.Contains(php85, "php85-fpm") || !slices.Contains(php85, "php85-mysqli") {
+	if !slices.Contains(php85, "php85-fpm") || !slices.Contains(php85, "php85-mysqli") || !slices.Contains(php85, "php85-ctype") {
 		t.Fatal("PHP 8.5 base package list is incomplete")
+	}
+	if suffix, ok := phpExtensionPackages["ctype"]; !ok || suffix != "ctype" {
+		t.Fatal("ctype must be available in PHP extension management")
 	}
 	if !slices.Contains(phpPackages("php84"), "php84-opcache") {
 		t.Fatal("PHP 8.4 must retain its separate OPcache package")
@@ -542,11 +545,21 @@ func TestAdminInputValidation(t *testing.T) {
 		t.Fatal("invalid PHP execution time accepted")
 	}
 	customRewrite := siteDefinition{
-		Domain: "example.com", Type: "php", Root: "/var/www/example.com/public",
+		Domain: "example.com", Type: "php", Root: "/var/www/example.com", RunDirectory: "public",
 		RewriteMode: "custom", RewriteRules: "rewrite ^/old$ /new permanent;",
 	}
 	if err := validateSite(&customRewrite); err != nil {
 		t.Fatalf("valid custom rewrite rejected: %v", err)
+	}
+	if customRewrite.RunDirectory != "public" || siteDocumentRoot(customRewrite) != "/var/www/example.com/public" {
+		t.Fatalf("PHP run directory was not normalized: %+v", customRewrite)
+	}
+	for _, runDirectory := range []string{"../secret", "/etc", "public/../../secret"} {
+		invalid := customRewrite
+		invalid.RunDirectory = runDirectory
+		if err := validateSite(&invalid); err == nil {
+			t.Fatalf("unsafe PHP run directory accepted: %q", runDirectory)
+		}
 	}
 	for _, rules := range []string{"include /etc/nginx/nginx.conf;", "rewrite ^ /index.php last; include /etc/nginx/nginx.conf;", "rewrite ^ /index.php last;\n}"} {
 		invalid := customRewrite
@@ -558,7 +571,7 @@ func TestAdminInputValidation(t *testing.T) {
 }
 
 func TestRenderPHPRewritePresets(t *testing.T) {
-	base := siteDefinition{Domain: "example.com", Type: "php", Root: "/var/www/example.com/public"}
+	base := siteDefinition{Domain: "example.com", Type: "php", Root: "/var/www/example.com", RunDirectory: "public"}
 	tests := []struct {
 		mode string
 		want string
@@ -583,6 +596,9 @@ func TestRenderPHPRewritePresets(t *testing.T) {
 	}
 	if config := renderSiteConfig(base, defaultNginxSettings()); !strings.Contains(config, "error_page 404 /404.html;") || !strings.Contains(config, "location = /404.html { internal; }") {
 		t.Fatal("PHP site config does not use the managed 404 page")
+	}
+	if config := renderSiteConfig(base, defaultNginxSettings()); !strings.Contains(config, "    root /var/www/example.com/public;") {
+		t.Fatal("PHP site config does not use the selected run directory")
 	}
 }
 
@@ -644,11 +660,14 @@ func TestDefaultSiteFiles(t *testing.T) {
 	}
 
 	phpRoot := t.TempDir()
-	phpSite := siteDefinition{Domain: "php.example.com", Type: "php", Root: phpRoot}
+	phpSite := siteDefinition{Domain: "php.example.com", Type: "php", Root: phpRoot, RunDirectory: "public"}
+	if err := os.MkdirAll(siteDocumentRoot(phpSite), 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := ensureDefaultSiteFiles(phpSite); err != nil {
 		t.Fatal(err)
 	}
-	probePath := filepath.Join(phpRoot, "index.php")
+	probePath := filepath.Join(phpRoot, "public", "index.php")
 	probe, err := os.ReadFile(probePath)
 	if err != nil || !strings.Contains(string(probe), "PHP_VERSION") || !strings.Contains(string(probe), "upload_max_filesize") || strings.Contains(string(probe), "phpinfo(") {
 		t.Fatalf("invalid PHP probe: %v", err)
@@ -759,7 +778,7 @@ func TestCustomCertificateValidation(t *testing.T) {
 
 func TestSiteViewDoesNotExposeCertificatePaths(t *testing.T) {
 	site := siteDefinition{
-		ID: "example-com", Domain: "example.com", Aliases: []string{}, Type: "static", Root: "/var/www/example.com/public",
+		ID: "example-com", Domain: "example.com", Aliases: []string{}, Type: "php", Root: "/var/www/example.com", RunDirectory: "public",
 		SSL: true, Certificate: "/secret/fullchain.pem", PrivateKey: "/secret/privkey.pem", NginxConfig: "# secret custom config",
 	}
 	encoded, err := json.Marshal(siteToView(site, nil))
@@ -772,6 +791,9 @@ func TestSiteViewDoesNotExposeCertificatePaths(t *testing.T) {
 	}
 	if !strings.Contains(text, `"certificateMode":"custom"`) || !strings.Contains(text, `"certificateConfigured":true`) {
 		t.Fatalf("site view omitted certificate state: %s", text)
+	}
+	if !strings.Contains(text, `"runDirectory":"public"`) {
+		t.Fatalf("site view omitted PHP run directory: %s", text)
 	}
 }
 

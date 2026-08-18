@@ -16,6 +16,7 @@ type siteRequest struct {
 	Aliases         []string `json:"aliases"`
 	Type            string   `json:"type"`
 	Root            string   `json:"root"`
+	RunDirectory    string   `json:"runDirectory"`
 	Upstream        string   `json:"upstream"`
 	RewriteMode     string   `json:"rewriteMode"`
 	RewriteRules    string   `json:"rewriteRules"`
@@ -32,6 +33,7 @@ type siteView struct {
 	Aliases               []string `json:"aliases"`
 	Type                  string   `json:"type"`
 	Root                  string   `json:"root"`
+	RunDirectory          string   `json:"runDirectory,omitempty"`
 	Upstream              string   `json:"upstream"`
 	RewriteMode           string   `json:"rewriteMode,omitempty"`
 	RewriteRules          string   `json:"rewriteRules,omitempty"`
@@ -52,7 +54,8 @@ type siteCertificateOption struct {
 func (request siteRequest) siteDefinition() siteDefinition {
 	return siteDefinition{
 		Domain: request.Domain, Aliases: request.Aliases, Type: request.Type, Root: request.Root,
-		Upstream: request.Upstream, RewriteMode: request.RewriteMode, RewriteRules: request.RewriteRules,
+		RunDirectory: request.RunDirectory, Upstream: request.Upstream,
+		RewriteMode: request.RewriteMode, RewriteRules: request.RewriteRules,
 		SSL: request.SSL,
 	}
 }
@@ -69,7 +72,8 @@ func managedCertificateID(records []certificateRecord, certificate, privateKey s
 func siteToView(site siteDefinition, records []certificateRecord) siteView {
 	view := siteView{
 		ID: site.ID, Domain: site.Domain, Aliases: site.Aliases, Type: site.Type, Root: site.Root,
-		Upstream: site.Upstream, RewriteMode: site.RewriteMode, RewriteRules: site.RewriteRules,
+		RunDirectory: site.RunDirectory, Upstream: site.Upstream,
+		RewriteMode: site.RewriteMode, RewriteRules: site.RewriteRules,
 		Enabled: site.Enabled, SSL: site.SSL, CreatedAt: site.CreatedAt,
 		CertificateConfigured: site.SSL && site.Certificate != "" && site.PrivateKey != "",
 	}

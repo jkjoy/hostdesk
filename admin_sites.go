@@ -39,6 +39,7 @@ type siteDefinition struct {
 	Aliases      []string `json:"aliases"`
 	Type         string   `json:"type"`
 	Root         string   `json:"root"`
+	RunDirectory string   `json:"runDirectory,omitempty"`
 	Upstream     string   `json:"upstream"`
 	RewriteMode  string   `json:"rewriteMode,omitempty"`
 	RewriteRules string   `json:"rewriteRules,omitempty"`
@@ -267,6 +268,13 @@ func (a *app) handleNginxSettingsPut(w http.ResponseWriter, r *http.Request) {
 
 func normalizeDomain(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
 
+func siteDocumentRoot(site siteDefinition) string {
+	if site.Type == "php" && site.RunDirectory != "" {
+		return filepath.Join(site.Root, site.RunDirectory)
+	}
+	return site.Root
+}
+
 func validateSiteBase(site *siteDefinition) error {
 	site.Domain = normalizeDomain(site.Domain)
 	if !domainPattern.MatchString(site.Domain) {
@@ -296,7 +304,26 @@ func validateSiteBase(site *siteDefinition) error {
 		if !filepath.IsAbs(site.Root) || !inside(webRootDir, site.Root) || site.Root == webRootDir {
 			return &apiError{http.StatusBadRequest, "网站目录必须位于 /var/www 下"}
 		}
+		if site.Type == "php" {
+			site.RunDirectory = strings.TrimSpace(site.RunDirectory)
+			if site.RunDirectory == "." {
+				site.RunDirectory = ""
+			}
+			if site.RunDirectory != "" {
+				if filepath.IsAbs(site.RunDirectory) || strings.ContainsAny(site.RunDirectory, "\r\n\x00") {
+					return &apiError{http.StatusBadRequest, "PHP 运行目录必须是网站目录内的相对路径"}
+				}
+				site.RunDirectory = filepath.Clean(site.RunDirectory)
+				documentRoot := siteDocumentRoot(*site)
+				if site.RunDirectory == ".." || !inside(site.Root, documentRoot) || documentRoot == site.Root {
+					return &apiError{http.StatusBadRequest, "PHP 运行目录必须是网站目录内的相对路径"}
+				}
+			}
+		} else {
+			site.RunDirectory = ""
+		}
 	case "proxy":
+		site.RunDirectory = ""
 		if site.Upstream == "" {
 			return &apiError{http.StatusBadRequest, "反向代理地址不能为空"}
 		}
@@ -433,7 +460,7 @@ func renderSiteBody(site siteDefinition) string {
         fastcgi_pass 127.0.0.1:9000;
     }
     location ~ /\. { deny all; }
-`, site.Root, renderRewriteRules(site))
+`, siteDocumentRoot(site), renderRewriteRules(site))
 	default:
 		return fmt.Sprintf(`    root %s;
     index index.html;
@@ -718,7 +745,7 @@ func (a *app) applySite(site siteDefinition, previous *siteDefinition) error {
 		return err
 	}
 	if site.Type != "proxy" {
-		if err := os.MkdirAll(site.Root, 0755); err != nil {
+		if err := os.MkdirAll(siteDocumentRoot(site), 0755); err != nil {
 			return err
 		}
 		if err := ensureDefaultSiteFiles(site); err != nil {

@@ -272,7 +272,7 @@ func phpPackages(prefix string) []string {
 	if prefix == "php84" {
 		packages = append(packages, prefix+"-opcache")
 	}
-	for _, suffix := range []string{"curl", "gd", "intl", "mbstring", "mysqlnd", "mysqli", "pdo", "pdo_mysql", "xml", "zip"} {
+	for _, suffix := range []string{"ctype", "curl", "gd", "intl", "mbstring", "mysqlnd", "mysqli", "pdo", "pdo_mysql", "xml", "zip"} {
 		packages = append(packages, prefix+"-"+suffix)
 	}
 	return packages

@@ -191,8 +191,9 @@ func ensureDefaultSiteFiles(site siteDefinition) error {
 	} else {
 		files["index.html"] = defaultStaticIndex(site.Domain)
 	}
+	documentRoot := siteDocumentRoot(site)
 	for name, content := range files {
-		filename := filepath.Join(site.Root, name)
+		filename := filepath.Join(documentRoot, name)
 		if _, err := os.Stat(filename); errors.Is(err, os.ErrNotExist) {
 			if err := os.WriteFile(filename, content, 0644); err != nil {
 				return err

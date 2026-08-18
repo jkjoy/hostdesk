@@ -29,7 +29,7 @@ type phpExtension struct {
 }
 
 var phpExtensionPackages = map[string]string{
-	"bcmath": "bcmath", "bz2": "bz2", "calendar": "calendar", "curl": "curl", "dom": "dom",
+	"bcmath": "bcmath", "bz2": "bz2", "calendar": "calendar", "ctype": "ctype", "curl": "curl", "dom": "dom",
 	"exif": "exif", "fileinfo": "fileinfo", "ftp": "ftp", "gd": "gd", "gettext": "gettext",
 	"gmp": "gmp", "iconv": "iconv", "intl": "intl", "ldap": "ldap", "mbstring": "mbstring",
 	"mysqli": "mysqli", "pdo_mysql": "pdo_mysql", "pdo_sqlite": "pdo_sqlite",
