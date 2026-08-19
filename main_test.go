@@ -1020,6 +1020,24 @@ func TestDockerComponentCanBeInstalledAndManaged(t *testing.T) {
 	}
 }
 
+func TestCacheComponentsCanBeInstalledAndManaged(t *testing.T) {
+	for name, want := range map[string]componentDefinition{
+		"redis":     {Packages: []string{"redis"}, Service: "redis"},
+		"memcached": {Packages: []string{"memcached"}, Service: "memcached"},
+	} {
+		definition, ok := components()[name]
+		if !ok || definition.Service != want.Service || !slices.Equal(definition.Packages, want.Packages) {
+			t.Fatalf("%s component definition invalid: %+v", name, definition)
+		}
+		if !allowedService(want.Service) {
+			t.Fatalf("%s service is not available to the service controller", name)
+		}
+	}
+	if pkg, err := extensionPackage("memcached"); err != nil || pkg != phpPrefix()+"-pecl-memcached" {
+		t.Fatalf("PHP memcached extension package=%q, err=%v", pkg, err)
+	}
+}
+
 func TestFTPUserSiteMigration(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), authDatabaseName)
 	db, err := sql.Open("sqlite", databasePath)

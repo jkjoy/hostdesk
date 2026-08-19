@@ -175,6 +175,9 @@ a { color: inherit; text-decoration: none; }
 .service-meta { padding-left: 12px; display: flex; flex-direction: column; gap: 4px; border-left: 1px solid var(--line); }
 .service-meta span { color: var(--muted); font-size: 9px; }
 .service-meta strong { font-size: 10px; }
+.service-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.service-toggle input { margin: 0; accent-color: var(--accent); }
+.service-toggle input:disabled { cursor: not-allowed; }
 .service-buttons { display: flex; align-items: center; gap: 6px; }
 
 .overview-skeleton { display: grid; gap: 18px; }
@@ -332,7 +335,9 @@ a { color: inherit; text-decoration: none; }
   .update-actions .button { flex: 1; }
   .component-install-band { align-items: stretch; flex-direction: column; }.component-install-band .button { width: 100%; }
   .service-item { grid-template-columns: minmax(0, 1fr) max-content; }
-  .service-meta { display: none; }
+  .service-main { grid-column: 1; grid-row: 1; }
+  .service-meta { padding: 8px 0 0; grid-column: 1 / -1; grid-row: 2; flex-direction: row; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); border-left: 0; }
+  .service-buttons { grid-column: 2; grid-row: 1; }
   .page-heading-actions { flex-wrap: wrap; }.heading-actions { width: 100%; overflow-x: auto; }
   .form-grid, .split-sections { grid-template-columns: 1fr; }.extension-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .selection-bar { overflow-x: auto; }.selection-bar strong { min-width: 70px; }.data-table { min-width: 680px; }.wide-table { min-width: 980px; }
@@ -351,7 +356,8 @@ a { color: inherit; text-decoration: none; }
   .update-copy span { white-space: normal; }
   .update-actions { padding-left: 0; }
   .service-item { min-height: 104px; align-items: flex-start; grid-template-columns: minmax(0, 1fr); }
-  .service-buttons { justify-content: flex-end; }
+  .service-meta { grid-column: 1; grid-row: 3; }
+  .service-buttons { grid-column: 1; grid-row: 2; justify-content: flex-end; }
   .service-buttons .button { flex: 1; }
   .extension-grid, .system-details { grid-template-columns: 1fr; }.system-details > div { border-right: 0; border-bottom: 1px solid var(--line); }
   .form-modal { max-height: calc(100vh - 20px); }.modal-layer { padding: 10px; }.modal-body { padding: 14px; }

@@ -36,6 +36,7 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  Square,
   SquareTerminal,
   UserRoundCheck,
   X,
@@ -99,8 +100,8 @@ const navGroups = [
   },
 ];
 
-const serviceNames: Record<string, string> = { nginx: "Nginx", php: "PHP-FPM", mysql: "MariaDB", ftp: "vsftpd" };
-const serviceIcons: Record<string, Component> = { nginx: Network, php: FileCode2, mysql: Database, ftp: FolderSync };
+const serviceNames: Record<string, string> = { nginx: "Nginx", php: "PHP-FPM", mysql: "MariaDB", redis: "Redis", memcached: "Memcached", ftp: "vsftpd" };
+const serviceIcons: Record<string, Component> = { nginx: Network, php: FileCode2, mysql: Database, redis: MemoryStick, memcached: Boxes, ftp: FolderSync };
 const system = computed(() => overview.value?.system);
 const viewLabels = computed(() => Object.fromEntries(navGroups.flatMap(group => group.items.map(item => [item.id, item.label]))));
 function notify(message: string, kind: ToastKind = "success") {
@@ -290,7 +291,7 @@ async function installUpdate() {
   }
 }
 
-async function runServiceAction(service: ServiceStatus, action: "install" | "start" | "restart" | "remove") {
+async function runServiceAction(service: ServiceStatus, action: "install" | "start" | "stop" | "restart" | "enable" | "disable" | "remove") {
   if (action === "remove") {
     const approved = await ask(`卸载 ${serviceLabel(service)}`, "程序包将被移除，网站、数据库及用户数据目录会保留。", "确认卸载", true);
     if (!approved) return;
@@ -481,7 +482,7 @@ onBeforeUnmount(() => {
                     <span class="service-version" :title="service.version || undefined">{{ service.version || (service.installed ? '已安装' : '尚未安装') }}</span>
                   </div>
                 </div>
-                <div class="service-meta"><span>开机启动</span><strong>{{ service.enabled ? '已启用' : '未启用' }}</strong></div>
+                <div class="service-meta"><label class="service-toggle"><input type="checkbox" :checked="service.enabled" :disabled="!service.installed || !!activeAction" @change="runServiceAction(service, service.enabled ? 'disable' : 'enable')"><span>开机启动</span></label><strong>{{ service.enabled ? '已启用' : '未启用' }}</strong></div>
                 <div class="service-buttons">
                   <button v-if="!service.installed" class="button primary" type="button" :disabled="!!activeAction" @click="runServiceAction(service, 'install')"><Download :size="16" />安装</button>
                   <template v-else>
@@ -489,6 +490,7 @@ onBeforeUnmount(() => {
                       <RotateCw v-if="service.running" :class="{ spin: activeAction === `${service.name}:restart` }" :size="16" />
                       <Play v-else :size="16" />{{ service.running ? '重启' : '启动' }}
                     </button>
+                    <button v-if="service.running" class="icon-button" type="button" title="停止服务" :disabled="!!activeAction" @click="runServiceAction(service, 'stop')"><Square :size="15" /></button>
                     <button class="icon-button danger" type="button" title="卸载组件" :disabled="!!activeAction" @click="runServiceAction(service, 'remove')"><PackageMinus :size="17" /></button>
                   </template>
                 </div>

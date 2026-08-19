@@ -290,8 +290,13 @@ func components() map[string]componentDefinition {
 			Packages: phpPackages(php),
 			Service:  phpService(php),
 		},
-		"mysql":  {Packages: []string{"mariadb", "mariadb-client"}, Service: "mariadb"},
-		"ftp":    {Packages: []string{"vsftpd"}, Service: "vsftpd"},
+		"mysql": {Packages: []string{"mariadb", "mariadb-client"}, Service: "mariadb"},
+		"ftp":   {Packages: []string{"vsftpd"}, Service: "vsftpd"},
+		"redis": {Packages: []string{"redis"}, Service: "redis"},
+		"memcached": {
+			Packages: []string{"memcached"},
+			Service:  "memcached",
+		},
 		"docker": {Packages: []string{"docker"}, Service: "docker"},
 	}
 }
@@ -387,6 +392,10 @@ func componentStatus(name string, definition componentDefinition) serviceStatus 
 		status.Version = commandVersion("mariadb", "--version")
 	case "ftp":
 		status.Version = commandVersion("vsftpd", "-v")
+	case "redis":
+		status.Version = commandVersion("redis-server", "--version")
+	case "memcached":
+		status.Version = commandVersion("memcached", "-h")
 	case "docker":
 		status.Version = commandVersion("docker", "--version")
 	}
@@ -399,7 +408,7 @@ func (a *app) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	definitions := components()
 	statuses := make([]serviceStatus, 0, len(definitions))
-	for _, name := range []string{"nginx", "php", "mysql", "ftp"} {
+	for _, name := range []string{"nginx", "php", "mysql", "redis", "memcached", "ftp"} {
 		statuses = append(statuses, componentStatus(name, definitions[name]))
 	}
 	system := collectSystemOverview()
@@ -442,7 +451,7 @@ func (a *app) handleComponentInstall(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				_, err = runAdmin(time.Minute, "rc-service", definition.Service, "start")
 			}
-		case "docker":
+		case "redis", "memcached", "docker":
 			_, err = runAdmin(2*time.Minute, "rc-service", definition.Service, "start")
 		}
 	}

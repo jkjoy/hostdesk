@@ -32,7 +32,7 @@ var phpExtensionPackages = map[string]string{
 	"bcmath": "bcmath", "bz2": "bz2", "calendar": "calendar", "ctype": "ctype", "curl": "curl", "dom": "dom",
 	"exif": "exif", "fileinfo": "fileinfo", "ftp": "ftp", "gd": "gd", "gettext": "gettext",
 	"gmp": "gmp", "iconv": "iconv", "intl": "intl", "ldap": "ldap", "mbstring": "mbstring",
-	"mysqli": "mysqli", "pdo_mysql": "pdo_mysql", "pdo_sqlite": "pdo_sqlite",
+	"memcached": "pecl-memcached", "mysqli": "mysqli", "pdo_mysql": "pdo_mysql", "pdo_sqlite": "pdo_sqlite",
 	"pgsql": "pgsql", "phar": "phar", "redis": "pecl-redis", "simplexml": "simplexml", "soap": "soap",
 	"sockets": "sockets", "sodium": "sodium", "sqlite3": "sqlite3", "xdebug": "pecl-xdebug",
 	"xml": "xml", "xmlreader": "xmlreader", "xmlwriter": "xmlwriter", "xsl": "xsl", "zip": "zip",

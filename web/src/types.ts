@@ -5,7 +5,7 @@ export interface Session {
 }
 
 export interface ServiceStatus {
-  name: "nginx" | "php" | "mysql" | "ftp" | string;
+  name: "nginx" | "php" | "mysql" | "redis" | "memcached" | "ftp" | string;
   service: string;
   installed: boolean;
   running: boolean;
