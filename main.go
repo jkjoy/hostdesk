@@ -148,6 +148,7 @@ func main() {
 	mux.HandleFunc("GET /api/admin/nginx/settings", a.handleNginxSettingsGet)
 	mux.HandleFunc("PUT /api/admin/nginx/settings", a.handleNginxSettingsPut)
 	mux.HandleFunc("GET /api/admin/sites", a.handleSitesList)
+	mux.HandleFunc("GET /api/admin/site-directories", a.handleSiteDirectoriesList)
 	mux.HandleFunc("POST /api/admin/sites", a.handleSiteCreate)
 	mux.HandleFunc("PUT /api/admin/sites/{id}", a.handleSiteUpdate)
 	mux.HandleFunc("DELETE /api/admin/sites/{id}", a.handleSiteDelete)
@@ -701,6 +702,35 @@ func applyFilePermissions(filename string, info fs.FileInfo, ownership fileOwner
 	return os.Chmod(filename, mode)
 }
 
+func applyPathMetadata(filename string, ownership fileOwnership, mode fs.FileMode) error {
+	info, err := os.Lstat(filename)
+	if err != nil {
+		return err
+	}
+	current := ownershipFromInfo(info)
+	if current != ownership {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if err := os.Lchown(filename, ownership.UID, ownership.GID); err != nil {
+				return err
+			}
+		} else if err := os.Chown(filename, ownership.UID, ownership.GID); err != nil {
+			return err
+		}
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	return os.Chmod(filename, mode)
+}
+
+func inheritPathMetadata(filename, parent string, mode fs.FileMode) error {
+	info, err := os.Stat(parent)
+	if err != nil {
+		return err
+	}
+	return applyPathMetadata(filename, ownershipFromInfo(info), mode)
+}
+
 func (a *app) handleFilePermissions(w http.ResponseWriter, r *http.Request) {
 	if a.authorize(w, r, true) == nil {
 		return
@@ -833,10 +863,15 @@ func (a *app) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err == nil {
+		err = applyPathMetadata(temp.Name(), ownershipFromInfo(info), info.Mode().Perm())
+	}
+	if err == nil {
 		err = os.Rename(temp.Name(), target.Real)
 	}
 	if err != nil {
-		_ = os.Remove(temp.Name())
+		if temp != nil {
+			_ = os.Remove(temp.Name())
+		}
 		writeError(w, err)
 		return
 	}
@@ -856,21 +891,34 @@ func (a *app) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target, err := a.writable(body.Path)
+	created := false
 	if err == nil && target.Relative == "" {
 		err = &apiError{http.StatusBadRequest, "不能创建管理根目录"}
 	}
 	if err == nil {
 		if body.Type == "directory" {
 			err = os.Mkdir(target.Absolute, 0755)
+			created = err == nil
 		} else {
 			var file *os.File
 			file, err = os.OpenFile(target.Absolute, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 			if err == nil {
+				created = true
 				err = file.Close()
 			}
 		}
 	}
+	if err == nil {
+		mode := fs.FileMode(0644)
+		if body.Type == "directory" {
+			mode = 0755
+		}
+		err = inheritPathMetadata(target.Absolute, filepath.Dir(target.Absolute), mode)
+	}
 	if err != nil {
+		if created {
+			_ = os.RemoveAll(target.Absolute)
+		}
 		writeError(w, err)
 		return
 	}
@@ -940,7 +988,7 @@ func (a *app) handleMove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func copyPath(source, target string) error {
+func copyPath(source, target string, ownership fileOwnership) (err error) {
 	info, err := os.Lstat(source)
 	if err != nil {
 		return err
@@ -949,19 +997,24 @@ func copyPath(source, target string) error {
 		return &apiError{http.StatusBadRequest, "为安全起见，不复制符号链接"}
 	}
 	if info.IsDir() {
-		if err := os.Mkdir(target, info.Mode().Perm()); err != nil {
+		if err := os.Mkdir(target, 0700); err != nil {
 			return err
 		}
+		defer func() {
+			if err != nil {
+				_ = os.RemoveAll(target)
+			}
+		}()
 		entries, err := os.ReadDir(source)
 		if err != nil {
 			return err
 		}
 		for _, entry := range entries {
-			if err := copyPath(filepath.Join(source, entry.Name()), filepath.Join(target, entry.Name())); err != nil {
+			if err := copyPath(filepath.Join(source, entry.Name()), filepath.Join(target, entry.Name()), ownership); err != nil {
 				return err
 			}
 		}
-		return nil
+		return applyPathMetadata(target, ownership, info.Mode().Perm())
 	}
 	if !info.Mode().IsRegular() {
 		return &apiError{http.StatusBadRequest, "仅支持复制普通文件和目录"}
@@ -971,16 +1024,24 @@ func copyPath(source, target string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(target)
+		}
+	}()
 	_, copyErr := io.Copy(out, in)
 	closeErr := out.Close()
 	if copyErr != nil {
 		return copyErr
 	}
-	return closeErr
+	if closeErr != nil {
+		return closeErr
+	}
+	return applyPathMetadata(target, ownership, info.Mode().Perm())
 }
 
 func (a *app) handleCopy(w http.ResponseWriter, r *http.Request) {
@@ -1002,10 +1063,13 @@ func (a *app) handleCopy(w http.ResponseWriter, r *http.Request) {
 	}
 	target, err := a.writable(body.To)
 	if err == nil {
-		err = copyPath(source.Real, target.Absolute)
+		var parentInfo fs.FileInfo
+		parentInfo, err = os.Stat(filepath.Dir(target.Absolute))
+		if err == nil {
+			err = copyPath(source.Real, target.Absolute, ownershipFromInfo(parentInfo))
+		}
 	}
 	if err != nil {
-		_ = os.RemoveAll(target.Absolute)
 		writeError(w, err)
 		return
 	}
@@ -1047,6 +1111,9 @@ func (a *app) handleUpload(w http.ResponseWriter, r *http.Request) {
 	_, err = io.Copy(temp, r.Body)
 	if closeErr := temp.Close(); err == nil {
 		err = closeErr
+	}
+	if err == nil {
+		err = inheritPathMetadata(tempName, directory.Real, 0644)
 	}
 	if err == nil {
 		err = os.Rename(tempName, target)
@@ -1201,6 +1268,10 @@ func (a *app) handleRemoteDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, closeErr)
 		return
 	}
+	if err := inheritPathMetadata(tempName, destination.Real, 0644); err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := os.Link(tempName, target); err != nil {
 		writeError(w, err)
 		return
@@ -1340,10 +1411,13 @@ func (a *app) handleArchive(w http.ResponseWriter, r *http.Request) {
 		err = closeErr
 	}
 	if err == nil {
-		err = copyPath(tempName, output)
+		var destinationInfo fs.FileInfo
+		destinationInfo, err = os.Stat(destination.Real)
+		if err == nil {
+			err = copyPath(tempName, output, ownershipFromInfo(destinationInfo))
+		}
 	}
 	if err != nil {
-		_ = os.Remove(output)
 		writeError(w, err)
 		return
 	}

@@ -275,6 +275,59 @@ func siteDocumentRoot(site siteDefinition) string {
 	return site.Root
 }
 
+func siteRunDirectories(root string) ([]string, error) {
+	directories := []string{""}
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return directories, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, &apiError{http.StatusBadRequest, "网站目录不能是符号链接"}
+	}
+	if !info.IsDir() {
+		return nil, &apiError{http.StatusBadRequest, "网站目录不是文件夹"}
+	}
+	err = filepath.WalkDir(root, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if current == root || !entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, current)
+		if err != nil {
+			return err
+		}
+		directories = append(directories, filepath.ToSlash(relative))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(directories[1:])
+	return directories, nil
+}
+
+func (a *app) handleSiteDirectoriesList(w http.ResponseWriter, r *http.Request) {
+	if a.authorize(w, r, false) == nil {
+		return
+	}
+	root := filepath.Clean(strings.TrimSpace(r.URL.Query().Get("root")))
+	if !filepath.IsAbs(root) || !inside(webRootDir, root) || root == webRootDir {
+		writeError(w, &apiError{http.StatusBadRequest, "网站目录必须位于 /var/www 下"})
+		return
+	}
+	directories, err := siteRunDirectories(root)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"directories": directories})
+}
+
 func validateSiteBase(site *siteDefinition) error {
 	site.Domain = normalizeDomain(site.Domain)
 	if !domainPattern.MatchString(site.Domain) {

@@ -602,6 +602,50 @@ func TestRenderPHPRewritePresets(t *testing.T) {
 	}
 }
 
+func TestSiteRunDirectoriesListsNestedFoldersWithoutFollowingSymlinks(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"storage", "app/public", "app/cache"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.php"), []byte("<?php"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "app"), filepath.Join(root, "linked-app")); err != nil {
+		t.Fatal(err)
+	}
+	directories, err := siteRunDirectories(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"", "app", "app/cache", "app/public", "storage"}
+	if !slices.Equal(directories, want) {
+		t.Fatalf("directories=%q, want %q", directories, want)
+	}
+}
+
+func TestSiteRunDirectoriesAllowsMissingRoot(t *testing.T) {
+	directories, err := siteRunDirectories(filepath.Join(t.TempDir(), "not-created"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(directories, []string{""}) {
+		t.Fatalf("directories=%q, want root option", directories)
+	}
+}
+
+func TestSiteRunDirectoriesRejectsSymlinkRoot(t *testing.T) {
+	target := t.TempDir()
+	root := filepath.Join(t.TempDir(), "site")
+	if err := os.Symlink(target, root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := siteRunDirectories(root); err == nil {
+		t.Fatal("symlink website root was accepted")
+	}
+}
+
 func TestRenderSiteConfigUsesCustomOverride(t *testing.T) {
 	site := siteDefinition{
 		ID:          "example-com",
@@ -1146,6 +1190,140 @@ func TestFilePermissionsUpdatesOwnershipModeAndChildren(t *testing.T) {
 		if info.Mode().Perm() != 0750 {
 			t.Fatalf("unexpected mode for %s: %v", filename, info.Mode().Perm())
 		}
+	}
+}
+
+func TestCreatedFileMetadataInheritsParentOwnership(t *testing.T) {
+	parent := t.TempDir()
+	if os.Geteuid() == 0 {
+		if err := os.Chown(parent, 65534, 65534); err != nil {
+			t.Logf("cannot assign alternate test ownership: %v", err)
+		}
+	}
+	child := filepath.Join(parent, "upload.txt")
+	if err := os.WriteFile(child, []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inheritPathMetadata(child, parent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	childInfo, err := os.Stat(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownershipFromInfo(childInfo) != ownershipFromInfo(parentInfo) {
+		t.Fatalf("child ownership=%+v, want parent ownership=%+v", ownershipFromInfo(childInfo), ownershipFromInfo(parentInfo))
+	}
+	if childInfo.Mode().Perm() != 0644 {
+		t.Fatalf("child mode=%v, want 0644", childInfo.Mode().Perm())
+	}
+}
+
+func TestUploadUsesDestinationOwnershipAndReadableMode(t *testing.T) {
+	root := t.TempDir()
+	a := &app{
+		root: root, rootReal: root, uploadMax: 1024,
+		sessions: map[string]*sessionInfo{"session": {CSRF: "csrf", Expires: time.Now().Add(time.Hour), User: "admin"}},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/?dir=&name=upload.txt", strings.NewReader("content"))
+	request.Header.Set("X-CSRF-Token", "csrf")
+	request.AddCookie(&http.Cookie{Name: "hostdesk_session", Value: "session"})
+	response := httptest.NewRecorder()
+	a.handleUpload(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("upload failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	parentInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileInfo, err := os.Stat(filepath.Join(root, "upload.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownershipFromInfo(fileInfo) != ownershipFromInfo(parentInfo) {
+		t.Fatalf("upload ownership=%+v, want destination ownership=%+v", ownershipFromInfo(fileInfo), ownershipFromInfo(parentInfo))
+	}
+	if fileInfo.Mode().Perm() != 0644 {
+		t.Fatalf("upload mode=%v, want 0644", fileInfo.Mode().Perm())
+	}
+}
+
+func TestCreateDoesNotRemoveExistingTarget(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "existing.txt")
+	if err := os.WriteFile(existing, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{
+		root: root, rootReal: root,
+		sessions: map[string]*sessionInfo{"session": {CSRF: "csrf", Expires: time.Now().Add(time.Hour), User: "admin"}},
+	}
+	response := authenticatedRequest(t, a.handleCreate, http.MethodPost,
+		`{"path":"existing.txt","type":"file"}`, "csrf", &http.Cookie{Name: "hostdesk_session", Value: "session"})
+	if response.Code == http.StatusCreated {
+		t.Fatalf("existing target was unexpectedly created: %s", response.Body.String())
+	}
+	content, err := os.ReadFile(existing)
+	if err != nil || string(content) != "keep" {
+		t.Fatalf("existing target was changed or removed: %q, %v", content, err)
+	}
+}
+
+func TestCopyPathUsesDestinationOwnership(t *testing.T) {
+	sourceRoot := t.TempDir()
+	source := filepath.Join(sourceRoot, "source")
+	if err := os.Mkdir(source, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("content"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	destinationRoot := t.TempDir()
+	destinationInfo, err := os.Stat(destinationRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(destinationRoot, "copy")
+	ownership := ownershipFromInfo(destinationInfo)
+	if err := copyPath(source, destination, ownership); err != nil {
+		t.Fatal(err)
+	}
+	for _, filename := range []string{destination, filepath.Join(destination, "file.txt")} {
+		info, err := os.Stat(filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ownershipFromInfo(info) != ownership {
+			t.Fatalf("%s ownership=%+v, want %+v", filename, ownershipFromInfo(info), ownership)
+		}
+	}
+}
+
+func TestCopyPathDoesNotRemoveExistingTarget(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source.txt")
+	target := filepath.Join(root, "target.txt")
+	if err := os.WriteFile(source, []byte("source"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPath(source, target, ownershipFromInfo(rootInfo)); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("copy error=%v, want os.ErrExist", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || string(content) != "keep" {
+		t.Fatalf("existing target was changed or removed: %q, %v", content, err)
 	}
 }
 

@@ -19,6 +19,8 @@ const { notify, confirm } = useUI();
 const sites = ref<Site[]>([]);
 const certificates = ref<CertificateOption[]>([]);
 const loading = ref(false);
+const directoriesLoading = ref(false);
+const runDirectories = ref<string[]>([]);
 const modal = ref(false);
 const editing = ref<Site | null>(null);
 const nginxModal = ref(false);
@@ -32,6 +34,11 @@ const form = reactive({
   ssl: false, certificateMode: "managed" as "managed" | "custom", certificateId: "", certificatePem: "", privateKeyPem: "",
 });
 const customCertificateRequired = computed(() => form.ssl && form.certificateMode === "custom" && !(editing.value?.certificateMode === "custom" && editing.value.certificateConfigured));
+const availableRunDirectories = computed(() => {
+  const directories = runDirectories.value.filter(Boolean);
+  if (!form.runDirectory || directories.includes(form.runDirectory)) return directories;
+  return [...directories, form.runDirectory];
+});
 
 async function load() {
   loading.value = true;
@@ -43,6 +50,21 @@ async function load() {
     notify(errorMessage(e), "error");
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadRunDirectories() {
+  runDirectories.value = [];
+  if (form.type !== "php" || !form.root.trim()) return;
+  directoriesLoading.value = true;
+  try {
+    const query = new URLSearchParams({ root: form.root.trim() });
+    const data = await api<{ directories: string[] }>(`/api/admin/site-directories?${query}`);
+    runDirectories.value = data.directories;
+  } catch (e) {
+    notify(errorMessage(e), "error");
+  } finally {
+    directoriesLoading.value = false;
   }
 }
 
@@ -59,6 +81,7 @@ function open(site?: Site) {
     certificateMode: defaultMode, certificateId: certificates.value[0]?.id || "", certificatePem: "", privateKeyPem: "",
   });
   modal.value = true;
+  void loadRunDirectories();
 }
 
 async function save() {
@@ -175,10 +198,10 @@ onMounted(load);
     <div class="form-grid">
       <label class="field">主域名<input v-model="form.domain" :disabled="!!editing" placeholder="example.com" required></label>
       <label class="field">别名域名<input v-model="form.aliases" placeholder="www.example.com, api.example.com"></label>
-      <label class="field">网站类型<select v-model="form.type"><option value="static">静态网站</option><option value="php">PHP 网站</option><option value="proxy">反向代理</option></select></label>
-      <label v-if="form.type !== 'proxy'" class="field">网站目录<input v-model="form.root" placeholder="自动生成到 /var/www"></label>
+      <label class="field">网站类型<select v-model="form.type" @change="loadRunDirectories"><option value="static">静态网站</option><option value="php">PHP 网站</option><option value="proxy">反向代理</option></select></label>
+      <label v-if="form.type !== 'proxy'" class="field">网站目录<input v-model="form.root" placeholder="自动生成到 /var/www" @change="loadRunDirectories"></label>
       <label v-else class="field">上游地址<input v-model="form.upstream" placeholder="http://127.0.0.1:3000"></label>
-      <label v-if="form.type === 'php'" class="field">运行目录（相对于网站目录）<input v-model="form.runDirectory" placeholder="public"></label>
+      <label v-if="form.type === 'php'" class="field">运行目录<select v-model="form.runDirectory" :disabled="directoriesLoading"><option value="">网站根目录</option><option v-for="directory in availableRunDirectories" :key="directory" :value="directory">/{{ directory }}</option></select></label>
       <label v-if="form.type === 'php'" class="field">伪静态<select v-model="form.rewriteMode"><option value="none">关闭</option><option value="wordpress">WordPress</option><option value="laravel">通用 PHP / Laravel</option><option value="thinkphp">ThinkPHP</option><option value="custom">自定义</option></select></label>
       <label v-if="form.type === 'php' && form.rewriteMode === 'custom'" class="field full">自定义规则<textarea v-model="form.rewriteRules" rows="5" spellcheck="false"></textarea></label>
       <label class="check-field full"><input v-model="form.ssl" type="checkbox">启用 HTTPS</label>
